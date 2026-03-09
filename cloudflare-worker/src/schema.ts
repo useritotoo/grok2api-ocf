@@ -183,30 +183,78 @@ CREATE INDEX IF NOT EXISTS idx_api_key_usage_day ON api_key_usage_daily(day);
 
 const schemaReady = new WeakMap<Env["DB"], Promise<void>>();
 
+export function splitSqlStatements(sql: string): string[] {
+  const statements: string[] = [];
+  let current = "";
+  let inString = false;
+
+  for (let i = 0; i < sql.length; i++) {
+    const char = sql[i]!;
+    current += char;
+
+    if (char === "'") {
+      const next = sql[i + 1];
+      if (inString && next === "'") {
+        current += next;
+        i += 1;
+        continue;
+      }
+      inString = !inString;
+      continue;
+    }
+
+    if (char === ";" && !inString) {
+      const statement = current.slice(0, -1).trim();
+      if (statement) statements.push(statement);
+      current = "";
+    }
+  }
+
+  const trailing = current.trim();
+  if (trailing) statements.push(trailing);
+  return statements;
+}
+
+async function runSqlBundle(db: Env["DB"], sql: string): Promise<void> {
+  const statements = splitSqlStatements(sql).map((statement) => db.prepare(statement));
+  if (!statements.length) return;
+  await db.batch(statements);
+}
+
 async function ensureApiKeyQuotaColumns(db: Env["DB"]): Promise<void> {
   const res = await db.prepare("PRAGMA table_info(api_keys)").all<{ name: string }>();
   const columns = new Set((res.results ?? []).map((row) => String(row.name)));
 
   if (!columns.has("chat_limit")) {
-    await db.exec("ALTER TABLE api_keys ADD COLUMN chat_limit INTEGER NOT NULL DEFAULT -1");
+    await db.prepare("ALTER TABLE api_keys ADD COLUMN chat_limit INTEGER NOT NULL DEFAULT -1").run();
   }
   if (!columns.has("heavy_limit")) {
-    await db.exec("ALTER TABLE api_keys ADD COLUMN heavy_limit INTEGER NOT NULL DEFAULT -1");
+    await db.prepare("ALTER TABLE api_keys ADD COLUMN heavy_limit INTEGER NOT NULL DEFAULT -1").run();
   }
   if (!columns.has("image_limit")) {
-    await db.exec("ALTER TABLE api_keys ADD COLUMN image_limit INTEGER NOT NULL DEFAULT -1");
+    await db.prepare("ALTER TABLE api_keys ADD COLUMN image_limit INTEGER NOT NULL DEFAULT -1").run();
   }
   if (!columns.has("video_limit")) {
-    await db.exec("ALTER TABLE api_keys ADD COLUMN video_limit INTEGER NOT NULL DEFAULT -1");
+    await db.prepare("ALTER TABLE api_keys ADD COLUMN video_limit INTEGER NOT NULL DEFAULT -1").run();
+  }
+}
+
+async function ensureTokenMetadataColumns(db: Env["DB"]): Promise<void> {
+  const res = await db.prepare("PRAGMA table_info(tokens)").all<{ name: string }>();
+  const columns = new Set((res.results ?? []).map((row) => String(row.name)));
+
+  if (!columns.has("last_asset_clear_at")) {
+    await db.prepare("ALTER TABLE tokens ADD COLUMN last_asset_clear_at INTEGER").run();
   }
 }
 
 async function ensureDbSchemaInternal(db: Env["DB"]): Promise<void> {
-  await db.exec(BASE_SCHEMA_SQL);
-  await db.exec(CACHE_SCHEMA_SQL);
-  await db.exec(SETTINGS_SECTIONS_SQL);
+  await runSqlBundle(db, BASE_SCHEMA_SQL);
+  await runSqlBundle(db, CACHE_SCHEMA_SQL);
+  await runSqlBundle(db, SETTINGS_SECTIONS_SQL);
   await ensureApiKeyQuotaColumns(db);
-  await db.exec(API_KEY_USAGE_SQL);
+  await ensureTokenMetadataColumns(db);
+  await runSqlBundle(db, API_KEY_USAGE_SQL);
 }
 
 export function ensureDbSchema(db: Env["DB"]): Promise<void> {

@@ -31,11 +31,25 @@ import {
   selectBestToken,
   tokenRowToInfo,
   updateTokenNote,
+  updateTokenAssetClearAt,
   updateTokenTags,
   updateTokenLimits,
 } from "../repo/tokens";
+import {
+  createBatchTask,
+  finishBatchTask,
+  isBatchTaskCancelled,
+  updateBatchTaskProgress,
+} from "../repo/batchTasks";
 import { generateImagineWs, resolveAspectRatio } from "../grok/imagineExperimental";
 import { checkRateLimits } from "../grok/rateLimits";
+import {
+  clearAssetsForToken,
+  getAssetDetail,
+  maskAdminToken,
+  type OnlineAccountInfo,
+  type OnlineAssetDetail,
+} from "../grok/assets";
 import { addRequestLog, clearRequestLogs, getRequestLogs, getRequestStats } from "../repo/logs";
 import { getRefreshProgress, setRefreshProgress } from "../repo/refreshProgress";
 import {
@@ -216,6 +230,259 @@ async function getKvStats(db: Env["DB"]): Promise<{
     image: { count: imageCount, size_bytes: imageBytes, size_mb: toMb(imageBytes) },
     video: { count: videoCount, size_bytes: videoBytes, size_mb: toMb(videoBytes) },
   };
+}
+
+function normalizeRequestedTokens(raw: unknown): string[] {
+  if (Array.isArray(raw)) {
+    return [...new Set(raw.map((item) => normalizeSsoToken(String(item ?? ""))).filter(Boolean))];
+  }
+  const value = String(raw ?? "").trim();
+  if (!value) return [];
+  return [...new Set(value.split(",").map((item) => normalizeSsoToken(item)).filter(Boolean))];
+}
+
+function toOnlineAccountInfo(
+  row: Awaited<ReturnType<typeof listTokens>>[number],
+): OnlineAccountInfo {
+  return {
+    token: row.token,
+    token_masked: maskAdminToken(row.token),
+    pool: toPoolName(row.token_type),
+    status: row.status,
+    last_asset_clear_at: row.last_asset_clear_at ?? null,
+  };
+}
+
+function buildOnlineErrorDetail(
+  token: string,
+  account: OnlineAccountInfo | null,
+  error: unknown,
+): OnlineAssetDetail {
+  const message = error instanceof Error ? error.message : String(error);
+  return {
+    token,
+    token_masked: account?.token_masked ?? maskAdminToken(token),
+    count: 0,
+    status: `error: ${message}`,
+    last_asset_clear_at: account?.last_asset_clear_at ?? null,
+  };
+}
+
+async function getOnlineAccounts(env: Env): Promise<OnlineAccountInfo[]> {
+  const rows = await listTokens(env.DB);
+  return rows.map(toOnlineAccountInfo);
+}
+
+function parseCacheScope(c: any, accounts: OnlineAccountInfo[]): {
+  scope: "none" | "single" | "selected" | "all";
+  tokens: string[];
+} {
+  const selectedTokens = normalizeRequestedTokens(c.req.query("tokens"));
+  if (selectedTokens.length) {
+    return { scope: "selected", tokens: selectedTokens };
+  }
+
+  if (String(c.req.query("scope") ?? "").trim().toLowerCase() === "all") {
+    return { scope: "all", tokens: accounts.map((account) => account.token) };
+  }
+
+  const singleToken = normalizeSsoToken(String(c.req.query("token") ?? ""));
+  if (singleToken) {
+    return { scope: "single", tokens: [singleToken] };
+  }
+
+  return { scope: "none", tokens: [] };
+}
+
+async function buildCachePayload(
+  env: Env,
+  scope: "none" | "single" | "selected" | "all",
+  requestedTokens: string[],
+): Promise<Record<string, unknown>> {
+  const stats = await getKvStats(env.DB);
+  const accounts = await getOnlineAccounts(env);
+  const accountMap = new Map(accounts.map((account) => [account.token, account]));
+
+  if (!requestedTokens.length) {
+    return {
+      local_image: stats.image,
+      local_video: stats.video,
+      online: { count: 0, status: "not_loaded", token: null, last_asset_clear_at: null },
+      online_accounts: accounts,
+      online_scope: scope,
+      online_details: [],
+    };
+  }
+
+  const settings = await getSettings(env);
+
+  if (scope === "single") {
+    const token = requestedTokens[0]!;
+    const account = accountMap.get(token) ?? null;
+    try {
+      const detail = await getAssetDetail(token, settings.grok, account);
+      return {
+        local_image: stats.image,
+        local_video: stats.video,
+        online: {
+          count: detail.count,
+          status: detail.status,
+          token: detail.token,
+          token_masked: detail.token_masked,
+          last_asset_clear_at: detail.last_asset_clear_at,
+        },
+        online_accounts: accounts,
+        online_scope: "single",
+        online_details: [],
+      };
+    } catch (error) {
+      const detail = buildOnlineErrorDetail(token, account, error);
+      return {
+        local_image: stats.image,
+        local_video: stats.video,
+        online: {
+          count: 0,
+          status: detail.status,
+          token: detail.token,
+          token_masked: detail.token_masked,
+          last_asset_clear_at: detail.last_asset_clear_at,
+        },
+        online_accounts: accounts,
+        online_scope: "single",
+        online_details: [],
+      };
+    }
+  }
+
+  const details: OnlineAssetDetail[] = [];
+  let total = 0;
+  for (const token of requestedTokens) {
+    const account = accountMap.get(token) ?? null;
+    try {
+      const detail = await getAssetDetail(token, settings.grok, account);
+      details.push(detail);
+      total += detail.count;
+    } catch (error) {
+      details.push(buildOnlineErrorDetail(token, account, error));
+    }
+  }
+
+  return {
+    local_image: stats.image,
+    local_video: stats.video,
+    online: {
+      count: total,
+      status: requestedTokens.length ? "ok" : "no_token",
+      token: null,
+      last_asset_clear_at: null,
+    },
+    online_accounts: accounts,
+    online_scope: scope,
+    online_details: details,
+  };
+}
+
+async function runOnlineCacheLoadBatch(
+  env: Env,
+  taskId: string,
+  scope: "selected" | "all",
+  requestedTokens: string[],
+): Promise<void> {
+  const settings = await getSettings(env);
+  const stats = await getKvStats(env.DB);
+  const accounts = await getOnlineAccounts(env);
+  const accountMap = new Map(accounts.map((account) => [account.token, account]));
+  const details: OnlineAssetDetail[] = [];
+  let processed = 0;
+  let success = 0;
+  let failed = 0;
+  let total = 0;
+
+  for (const token of requestedTokens) {
+    if (await isBatchTaskCancelled(env.DB, taskId)) {
+      await finishBatchTask(env.DB, taskId, { status: "cancelled", processed, success, failed });
+      return;
+    }
+
+    const account = accountMap.get(token) ?? null;
+    try {
+      const detail = await getAssetDetail(token, settings.grok, account);
+      details.push(detail);
+      total += detail.count;
+      success += 1;
+    } catch (error) {
+      details.push(buildOnlineErrorDetail(token, account, error));
+      failed += 1;
+    }
+
+    processed += 1;
+    await updateBatchTaskProgress(env.DB, taskId, { processed, success, failed });
+  }
+
+  await finishBatchTask(env.DB, taskId, {
+    status: "completed",
+    processed,
+    success,
+    failed,
+    result: {
+      local_image: stats.image,
+      local_video: stats.video,
+      online: {
+        count: total,
+        status: requestedTokens.length ? "ok" : "no_token",
+        token: null,
+        last_asset_clear_at: null,
+      },
+      online_accounts: accounts,
+      online_scope: scope,
+      online_details: details,
+    },
+  });
+}
+
+async function runOnlineCacheClearBatch(
+  env: Env,
+  taskId: string,
+  requestedTokens: string[],
+): Promise<void> {
+  const settings = await getSettings(env);
+  const results: Record<string, Record<string, unknown>> = {};
+  let processed = 0;
+  let success = 0;
+  let failed = 0;
+
+  for (const token of requestedTokens) {
+    if (await isBatchTaskCancelled(env.DB, taskId)) {
+      await finishBatchTask(env.DB, taskId, { status: "cancelled", processed, success, failed });
+      return;
+    }
+
+    try {
+      const result = await clearAssetsForToken(token, settings.grok);
+      await updateTokenAssetClearAt(env.DB, token, Date.now());
+      results[token] = { status: "success", result };
+      success += 1;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      results[token] = { status: "error", error: message };
+      failed += 1;
+    }
+
+    processed += 1;
+    await updateBatchTaskProgress(env.DB, taskId, { processed, success, failed });
+  }
+
+  await finishBatchTask(env.DB, taskId, {
+    status: "completed",
+    processed,
+    success,
+    failed,
+    result: {
+      status: "success",
+      summary: { total: requestedTokens.length, ok: success, fail: failed },
+      results,
+    },
+  });
 }
 
 adminRoutes.post("/api/v1/admin/login", async (c) => {
@@ -623,6 +890,7 @@ adminRoutes.get("/api/v1/admin/tokens", requireAdminAuth, async (c) => {
         note: r.note ?? "",
         fail_count: r.failed_count ?? 0,
         use_count: 0,
+        last_asset_clear_at: r.last_asset_clear_at ?? null,
       });
     }
     return c.json(out);
@@ -772,15 +1040,8 @@ adminRoutes.get("/api/v1/admin/cache/local", requireAdminAuth, async (c) => {
 
 adminRoutes.get("/api/v1/admin/cache", requireAdminAuth, async (c) => {
   try {
-    const stats = await getKvStats(c.env.DB);
-    return c.json({
-      local_image: stats.image,
-      local_video: stats.video,
-      online: { count: 0, status: "not_loaded", token: null, last_asset_clear_at: null },
-      online_accounts: [],
-      online_scope: "none",
-      online_details: [],
-    });
+    const { scope, tokens } = parseCacheScope(c, await getOnlineAccounts(c.env));
+    return c.json(await buildCachePayload(c.env, scope, tokens));
   } catch (e) {
     return c.json(legacyErr(`Get cache failed: ${e instanceof Error ? e.message : String(e)}`), 500);
   }
@@ -840,7 +1101,80 @@ adminRoutes.post("/api/v1/admin/cache/item/delete", requireAdminAuth, async (c) 
 });
 
 adminRoutes.post("/api/v1/admin/cache/online/clear", requireAdminAuth, async (c) => {
-  return c.json(legacyErr("Online assets clear is not supported on Cloudflare Workers"), 501);
+  try {
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const tokens = normalizeRequestedTokens(body.tokens);
+    const token = normalizeSsoToken(String(body.token ?? ""));
+    const requestedTokens = tokens.length ? tokens : token ? [token] : [];
+
+    if (!requestedTokens.length) {
+      return c.json(legacyErr("No tokens provided"), 400);
+    }
+
+    const settings = await getSettings(c.env);
+
+    if (requestedTokens.length > 1) {
+      const results: Record<string, Record<string, unknown>> = {};
+      for (const requestedToken of requestedTokens) {
+        try {
+          const result = await clearAssetsForToken(requestedToken, settings.grok);
+          await updateTokenAssetClearAt(c.env.DB, requestedToken, Date.now());
+          results[requestedToken] = { status: "success", result };
+        } catch (error) {
+          results[requestedToken] = {
+            status: "error",
+            error: error instanceof Error ? error.message : String(error),
+          };
+        }
+      }
+      return c.json({ status: "success", results });
+    }
+
+    const result = await clearAssetsForToken(requestedTokens[0]!, settings.grok);
+    await updateTokenAssetClearAt(c.env.DB, requestedTokens[0]!, Date.now());
+    return c.json({ status: "success", result });
+  } catch (e) {
+    return c.json(legacyErr(`Clear online cache failed: ${e instanceof Error ? e.message : String(e)}`), 500);
+  }
+});
+
+adminRoutes.post("/api/v1/admin/cache/online/load/async", requireAdminAuth, async (c) => {
+  try {
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const tokens = normalizeRequestedTokens(body.tokens);
+    const scope = String(body.scope ?? "").trim().toLowerCase() === "all" ? "all" : "selected";
+    const requestedTokens = tokens.length
+      ? tokens
+      : scope === "all"
+        ? (await getOnlineAccounts(c.env)).map((account) => account.token)
+        : [];
+
+    if (!requestedTokens.length) {
+      return c.json({ status: "error", detail: "No tokens provided" }, 400);
+    }
+
+    const task = await createBatchTask(c.env.DB, { kind: "cache_online_load", total: requestedTokens.length });
+    c.executionCtx.waitUntil(runOnlineCacheLoadBatch(c.env, task.task_id, scope, requestedTokens));
+    return c.json({ status: "success", task_id: task.task_id, total: requestedTokens.length });
+  } catch (e) {
+    return c.json(legacyErr(`Load online cache failed: ${e instanceof Error ? e.message : String(e)}`), 500);
+  }
+});
+
+adminRoutes.post("/api/v1/admin/cache/online/clear/async", requireAdminAuth, async (c) => {
+  try {
+    const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+    const requestedTokens = normalizeRequestedTokens(body.tokens);
+    if (!requestedTokens.length) {
+      return c.json({ status: "error", detail: "No tokens provided" }, 400);
+    }
+
+    const task = await createBatchTask(c.env.DB, { kind: "cache_online_clear", total: requestedTokens.length });
+    c.executionCtx.waitUntil(runOnlineCacheClearBatch(c.env, task.task_id, requestedTokens));
+    return c.json({ status: "success", task_id: task.task_id, total: requestedTokens.length });
+  } catch (e) {
+    return c.json(legacyErr(`Clear online cache failed: ${e instanceof Error ? e.message : String(e)}`), 500);
+  }
 });
 
 adminRoutes.get("/api/v1/admin/metrics", requireAdminAuth, async (c) => {

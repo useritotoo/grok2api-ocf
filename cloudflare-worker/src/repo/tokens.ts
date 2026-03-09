@@ -17,6 +17,7 @@ export interface TokenRow {
   last_failure_time: number | null;
   last_failure_reason: string | null;
   failed_count: number;
+  last_asset_clear_at: number | null;
 }
 
 const MAX_FAILURES = 3;
@@ -44,6 +45,7 @@ export function tokenRowToInfo(row: TokenRow): {
   last_failure_reason: string;
   limit_reason: string;
   cooldown_remaining: number;
+  last_asset_clear_at: number | null;
 } {
   const now = nowMs();
   const cooldownRemainingMs =
@@ -86,13 +88,14 @@ export function tokenRowToInfo(row: TokenRow): {
     last_failure_reason: row.last_failure_reason ?? "",
     limit_reason,
     cooldown_remaining,
+    last_asset_clear_at: row.last_asset_clear_at,
   };
 }
 
 export async function listTokens(db: Env["DB"]): Promise<TokenRow[]> {
   return dbAll<TokenRow>(
     db,
-    "SELECT token, token_type, created_time, remaining_queries, heavy_remaining_queries, status, tags, note, cooldown_until, last_failure_time, last_failure_reason, failed_count FROM tokens ORDER BY created_time DESC",
+    "SELECT token, token_type, created_time, remaining_queries, heavy_remaining_queries, status, tags, note, cooldown_until, last_failure_time, last_failure_reason, failed_count, last_asset_clear_at FROM tokens ORDER BY created_time DESC",
   );
 }
 
@@ -227,4 +230,12 @@ export async function updateTokenLimits(
   if (!parts.length) return;
   params.push(token);
   await dbRun(db, `UPDATE tokens SET ${parts.join(", ")} WHERE token = ?`, params);
+}
+
+export async function updateTokenAssetClearAt(
+  db: Env["DB"],
+  token: string,
+  at: number | null,
+): Promise<void> {
+  await dbRun(db, "UPDATE tokens SET last_asset_clear_at = ? WHERE token = ?", [at, token]);
 }
