@@ -24,9 +24,11 @@ import { createAdminSession, deleteAdminSession } from "../repo/adminSessions";
 import {
   addTokens,
   applyCooldown,
+  countTokens,
   deleteTokens,
   getAllTags,
   listTokens,
+  listTokensPage,
   recordTokenFailure,
   selectBestToken,
   tokenRowToInfo,
@@ -273,17 +275,45 @@ async function getOnlineAccounts(env: Env): Promise<OnlineAccountInfo[]> {
   return rows.map(toOnlineAccountInfo);
 }
 
-function parseCacheScope(c: any, accounts: OnlineAccountInfo[]): {
+async function getOnlineAccountsPage(
+  env: Env,
+  page: number,
+  pageSize: number,
+): Promise<{
+  items: OnlineAccountInfo[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+}> {
+  const safePageSize = Math.max(1, Math.min(200, Math.floor(pageSize || 24)));
+  const total = await countTokens(env.DB);
+  const totalPages = Math.max(1, Math.ceil(total / safePageSize));
+  const safePage = Math.min(Math.max(1, Math.floor(page || 1)), totalPages);
+  const offset = (safePage - 1) * safePageSize;
+  const rows = total ? await listTokensPage(env.DB, safePageSize, offset) : [];
+
+  return {
+    items: rows.map(toOnlineAccountInfo),
+    total,
+    page: safePage,
+    pageSize: safePageSize,
+    totalPages,
+  };
+}
+
+async function parseCacheScope(c: any, env: Env): Promise<{
   scope: "none" | "single" | "selected" | "all";
   tokens: string[];
-} {
+}> {
   const selectedTokens = normalizeRequestedTokens(c.req.query("tokens"));
   if (selectedTokens.length) {
     return { scope: "selected", tokens: selectedTokens };
   }
 
   if (String(c.req.query("scope") ?? "").trim().toLowerCase() === "all") {
-    return { scope: "all", tokens: accounts.map((account) => account.token) };
+    const rows = await listTokens(env.DB);
+    return { scope: "all", tokens: rows.map((row) => row.token) };
   }
 
   const singleToken = normalizeSsoToken(String(c.req.query("token") ?? ""));
@@ -294,26 +324,106 @@ function parseCacheScope(c: any, accounts: OnlineAccountInfo[]): {
   return { scope: "none", tokens: [] };
 }
 
+function parseBooleanQuery(value: string | undefined, fallback: boolean): boolean {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (!normalized) return fallback;
+  return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
+}
+
+function paginateOnlineAccounts(
+  accounts: OnlineAccountInfo[],
+  page: number,
+  pageSize: number,
+): {
+  items: OnlineAccountInfo[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+} {
+  const total = accounts.length;
+  const safePageSize = Math.max(1, Math.min(200, Math.floor(pageSize || 24)));
+  const totalPages = Math.max(1, Math.ceil(total / safePageSize));
+  const safePage = Math.min(Math.max(1, Math.floor(page || 1)), totalPages);
+  const start = (safePage - 1) * safePageSize;
+
+  return {
+    items: accounts.slice(start, start + safePageSize),
+    total,
+    page: safePage,
+    pageSize: safePageSize,
+    totalPages,
+  };
+}
+
 async function buildCachePayload(
   env: Env,
   scope: "none" | "single" | "selected" | "all",
   requestedTokens: string[],
+  options: {
+    includeAccounts?: boolean;
+    includeDetails?: boolean;
+    accountsPage?: number;
+    accountsPageSize?: number;
+  } = {},
 ): Promise<Record<string, unknown>> {
   const stats = await getKvStats(env.DB);
-  const accounts = await getOnlineAccounts(env);
-  const accountMap = new Map(accounts.map((account) => [account.token, account]));
+  const includeAccounts = options.includeAccounts !== false;
+  const includeDetails = options.includeDetails !== false;
+  const requestedPage = Number(options.accountsPage ?? 1);
+  const requestedPageSize = Number(options.accountsPageSize ?? 24);
+  let allAccounts: OnlineAccountInfo[] = [];
+  let accountSlice: {
+    items: OnlineAccountInfo[];
+    total: number;
+    page: number;
+    pageSize: number;
+    totalPages: number;
+  };
 
-  if (!requestedTokens.length) {
+  if (includeDetails) {
+    allAccounts = await getOnlineAccounts(env);
+    accountSlice = includeAccounts
+      ? paginateOnlineAccounts(allAccounts, requestedPage, requestedPageSize)
+      : {
+          items: [] as OnlineAccountInfo[],
+          total: allAccounts.length,
+          page: 1,
+          pageSize: 0,
+          totalPages: allAccounts.length ? 1 : 0,
+        };
+  } else if (includeAccounts) {
+    accountSlice = await getOnlineAccountsPage(env, requestedPage, requestedPageSize);
+  } else {
+    accountSlice = {
+      items: [] as OnlineAccountInfo[],
+      total: 0,
+      page: 1,
+      pageSize: 0,
+      totalPages: 0,
+    };
+  }
+
+  const basePayload = {
+    local_image: stats.image,
+    local_video: stats.video,
+    online_accounts: accountSlice.items,
+    online_accounts_total: accountSlice.total,
+    online_accounts_page: accountSlice.page,
+    online_accounts_page_size: accountSlice.pageSize,
+    online_accounts_total_pages: accountSlice.totalPages,
+  };
+
+  if (!requestedTokens.length || !includeDetails) {
     return {
-      local_image: stats.image,
-      local_video: stats.video,
+      ...basePayload,
       online: { count: 0, status: "not_loaded", token: null, last_asset_clear_at: null },
-      online_accounts: accounts,
-      online_scope: scope,
+      online_scope: requestedTokens.length ? scope : "none",
       online_details: [],
     };
   }
 
+  const accountMap = new Map(allAccounts.map((account) => [account.token, account]));
   const settings = await getSettings(env);
 
   if (scope === "single") {
@@ -322,8 +432,7 @@ async function buildCachePayload(
     try {
       const detail = await getAssetDetail(token, settings.grok, account);
       return {
-        local_image: stats.image,
-        local_video: stats.video,
+        ...basePayload,
         online: {
           count: detail.count,
           status: detail.status,
@@ -331,15 +440,13 @@ async function buildCachePayload(
           token_masked: detail.token_masked,
           last_asset_clear_at: detail.last_asset_clear_at,
         },
-        online_accounts: accounts,
         online_scope: "single",
         online_details: [],
       };
     } catch (error) {
       const detail = buildOnlineErrorDetail(token, account, error);
       return {
-        local_image: stats.image,
-        local_video: stats.video,
+        ...basePayload,
         online: {
           count: 0,
           status: detail.status,
@@ -347,7 +454,6 @@ async function buildCachePayload(
           token_masked: detail.token_masked,
           last_asset_clear_at: detail.last_asset_clear_at,
         },
-        online_accounts: accounts,
         online_scope: "single",
         online_details: [],
       };
@@ -368,15 +474,13 @@ async function buildCachePayload(
   }
 
   return {
-    local_image: stats.image,
-    local_video: stats.video,
+    ...basePayload,
     online: {
       count: total,
       status: requestedTokens.length ? "ok" : "no_token",
       token: null,
       last_asset_clear_at: null,
     },
-    online_accounts: accounts,
     online_scope: scope,
     online_details: details,
   };
@@ -1040,8 +1144,17 @@ adminRoutes.get("/api/v1/admin/cache/local", requireAdminAuth, async (c) => {
 
 adminRoutes.get("/api/v1/admin/cache", requireAdminAuth, async (c) => {
   try {
-    const { scope, tokens } = parseCacheScope(c, await getOnlineAccounts(c.env));
-    return c.json(await buildCachePayload(c.env, scope, tokens));
+    const { scope, tokens } = await parseCacheScope(c, c.env);
+    const includeAccounts = parseBooleanQuery(c.req.query("include_accounts"), true);
+    const includeDetails = parseBooleanQuery(c.req.query("include_details"), true);
+    const accountsPage = Math.max(1, Number(c.req.query("accounts_page") ?? 1));
+    const accountsPageSize = Math.max(1, Math.min(200, Number(c.req.query("accounts_page_size") ?? 24)));
+    return c.json(await buildCachePayload(c.env, scope, tokens, {
+      includeAccounts,
+      includeDetails,
+      accountsPage,
+      accountsPageSize,
+    }));
   } catch (e) {
     return c.json(legacyErr(`Get cache failed: ${e instanceof Error ? e.message : String(e)}`), 500);
   }
