@@ -1,0 +1,25 @@
+name = "grok2api-worker"
+main = "src/index.ts"
+compatibility_date = "2026-03-09"
+
+assets = { directory = "./.assets", binding = "ASSETS" }
+
+[placement]
+region = "aws:us-east-1"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "grok2api-worker"
+migrations_dir = "migrations"
+
+[[kv_namespaces]]
+binding = "KV_CACHE"
+
+[vars]
+CACHE_RESET_TZ_OFFSET_MINUTES = "480"
+BUILD_SHA = "dev"
+KV_CACHE_MAX_BYTES = "26214400"
+KV_CLEANUP_BATCH = "200"
+
+[triggers]
+crons = ["0 16 * * *"]
