@@ -19,18 +19,24 @@ Cloudflare Worker 的代码、`wrangler.toml`、迁移文件、静态资源同�
 
 ## Cloudflare Dashboard 部署
 
-在 Cloudflare Dashboard 连接 GitHub 后，导入这个仓库时建议这样设置：
+推荐直接使用 GitHub Connected Builds，步骤如下：
 
-1. `Root directory`: `cloudflare-worker`
-2. `Build command`: `npm run build`
-3. `Deploy command`: `npm run deploy`
-4. `Version command`: `npm run deploy:upload`
+1. 先 fork 本项目到你自己的 GitHub 账号，并确认 fork 仓库已经同步到你准备部署的分支。
+2. 登录 Cloudflare Dashboard，进入 `Workers & Pages`。
+3. 点击创建应用，选择通过 GitHub 导入仓库。
+4. 按 Cloudflare 提示连接 GitHub 账号后，选择你刚刚 fork 的仓库。
+5. 在构建部署设置中填写：
+   - `Root directory`: `cloudflare-worker`
+   - `Build command`: `npm run build`
+   - `Deploy command`: `npm run deploy`
+6. 点击部署，等待 Cloudflare 完成构建和发布。
+7. 部署完成后，访问 `https://<你的 Worker 域名>/admin`，使用默认管理员密码 `admin` 登录后台控制台。
 
-这样在 Connected Builds 里会执行：
+这条部署链路会执行：
 
 1. 同步主仓库静态资源到 `cloudflare-worker/.assets`
 2. 做 TypeScript 类型检查
-3. `wrangler deploy`
+3. 执行 `wrangler deploy`
 
 部署链路里故意不再追加 `wrangler d1 migrations apply DB --remote`。因为 Cloudflare Dashboard 自动 provision 的 D1 绑定在构建环境里没有写回仓库内的 `database_id`，强行在 deploy 命令里跑远程 migration 会让整次构建在发布成功后反而失败。
 

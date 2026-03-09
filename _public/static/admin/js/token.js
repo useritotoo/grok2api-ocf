@@ -1,6 +1,9 @@
 let apiKey = '';
 let allTokens = {};
 let flatTokens = [];
+let tokenLookup = new Set();
+let tokenPageState = TokenPageState.createState();
+let selectedCount = 0;
 let isBatchProcessing = false;
 let isBatchPaused = false;
 let batchQueue = [];
@@ -17,9 +20,56 @@ const byId = (id) => document.getElementById(id);
 const qsa = (selector) => document.querySelectorAll(selector);
 const DEFAULT_QUOTA_BASIC = 80;
 const DEFAULT_QUOTA_SUPER = 140;
+const TOKEN_PROCESS_CHUNK_SIZE = 400;
 
 function getDefaultQuotaForPool(pool) {
   return pool === 'ssoSuper' ? DEFAULT_QUOTA_SUPER : DEFAULT_QUOTA_BASIC;
+}
+
+function showLoadingText(text) {
+  const loading = byId('loading');
+  if (!loading) return;
+  loading.textContent = text;
+  loading.classList.remove('hidden');
+}
+
+function hideLoadingText() {
+  const loading = byId('loading');
+  if (loading) loading.classList.add('hidden');
+}
+
+function yieldToMainThread() {
+  return new Promise((resolve) => {
+    if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(() => resolve());
+      return;
+    }
+    setTimeout(resolve, 0);
+  });
+}
+
+function getSelectedTokenKeys() {
+  if (selectedCount === 0) return [];
+  return flatTokens.filter(t => t._selected).map(t => t.token);
+}
+
+function getCurrentFilterIndices() {
+  return TokenPageState.getFilterIndices(tokenPageState, currentFilter);
+}
+
+function applyTokenPageState(nextState) {
+  tokenPageState = nextState;
+  flatTokens = nextState.flatTokens;
+  tokenLookup = nextState.tokenSet;
+  selectedCount = nextState.selectedCount;
+}
+
+function rebuildTokenPageState() {
+  const nextState = TokenPageState.createState(getSelectedTokenKeys());
+  flatTokens.forEach((item) => {
+    TokenPageState.appendPoolTokens(nextState, item.pool || 'ssoBasic', [item]);
+  });
+  applyTokenPageState(nextState);
 }
 
 function setText(id, text) {
@@ -70,6 +120,7 @@ async function readJsonResponse(res) {
 }
 
 function getSelectedTokens() {
+  if (selectedCount === 0) return [];
   return flatTokens.filter(t => t._selected);
 }
 
@@ -83,7 +134,9 @@ function countSelected(tokens) {
 
 function setSelectedForTokens(tokens, selected) {
   tokens.forEach(t => {
+    if (t._selected === selected) return;
     t._selected = selected;
+    selectedCount += selected ? 1 : -1;
   });
 }
 
@@ -97,13 +150,9 @@ function syncVisibleSelectionUI(selected) {
 }
 
 function getPaginationData() {
-  const filteredTokens = getFilteredTokens();
-  const totalCount = filteredTokens.length;
-  const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
-  if (currentPage > totalPages) currentPage = totalPages;
-  const startIndex = (currentPage - 1) * pageSize;
-  const visibleTokens = filteredTokens.slice(startIndex, startIndex + pageSize);
-  return { filteredTokens, totalCount, totalPages, visibleTokens };
+  const page = TokenPageState.getPaginationData(tokenPageState, currentFilter, currentPage, pageSize);
+  currentPage = page.currentPage;
+  return page;
 }
 
 async function init() {
@@ -118,14 +167,15 @@ async function init() {
 
 async function loadData() {
   try {
+    showLoadingText(t('common.loading'));
     const res = await fetch('/v1/admin/tokens', {
       headers: buildAuthHeaders(apiKey)
     });
     if (res.ok) {
       const data = await res.json();
       allTokens = data;
-      processTokens(data);
-      updateStats(data);
+      await processTokens(data);
+      updateStats();
       renderTable();
     } else if (res.status === 401) {
       logout();
@@ -138,95 +188,61 @@ async function loadData() {
 }
 
 // Convert pool dict to flattened array
-function processTokens(data) {
-  flatTokens = [];
-  Object.keys(data).forEach(pool => {
+async function processTokens(data) {
+  const nextState = TokenPageState.createState(getSelectedTokenKeys());
+  const pools = Object.keys(data);
+  const totalCount = pools.reduce((count, pool) => {
     const tokens = data[pool];
-    if (Array.isArray(tokens)) {
-      tokens.forEach(t => {
-        // Normalize
-        const tObj = typeof t === 'string'
-          ? { token: t, status: 'active', quota: 0, note: '', use_count: 0, tags: [] }
-          : {
-            token: t.token,
-            status: t.status || 'active',
-            quota: t.quota || 0,
-            note: t.note || '',
-            fail_count: t.fail_count || 0,
-            use_count: t.use_count || 0,
-            tags: t.tags || [],
-            created_at: t.created_at,
-            last_used_at: t.last_used_at,
-            last_fail_at: t.last_fail_at,
-            last_fail_reason: t.last_fail_reason,
-            last_sync_at: t.last_sync_at,
-            last_asset_clear_at: t.last_asset_clear_at
-          };
-        flatTokens.push({ ...tObj, pool: pool, _selected: false });
-      });
+    return count + (Array.isArray(tokens) ? tokens.length : 0);
+  }, 0);
+  let processedCount = 0;
+
+  for (const pool of pools) {
+    const tokens = Array.isArray(data[pool]) ? data[pool] : [];
+    for (let i = 0; i < tokens.length; i += TOKEN_PROCESS_CHUNK_SIZE) {
+      const chunk = tokens.slice(i, i + TOKEN_PROCESS_CHUNK_SIZE);
+      TokenPageState.appendPoolTokens(nextState, pool, chunk);
+      processedCount += chunk.length;
+      if (totalCount > TOKEN_PROCESS_CHUNK_SIZE) {
+        showLoadingText(`${t('common.loading')} ${processedCount}/${totalCount}`);
+        await yieldToMainThread();
+      }
     }
-  });
+  }
+
+  applyTokenPageState(nextState);
 }
 
-function updateStats(data) {
-  // Logic same as before, simplified reuse if possible, but let's re-run on flatTokens
-  let totalTokens = flatTokens.length;
-  let activeTokens = 0;
-  let coolingTokens = 0;
-  let invalidTokens = 0;
-  let nsfwTokens = 0;
-  let noNsfwTokens = 0;
-  let chatQuota = 0;
-  let totalCalls = 0;
+function updateStats() {
+  const stats = tokenPageState.stats || TokenPageState.createEmptyStats();
+  const imageQuota = Math.floor(stats.chatQuota / 2);
 
-  flatTokens.forEach(t => {
-    if (t.status === 'active') {
-      activeTokens++;
-      chatQuota += t.quota;
-    } else if (t.status === 'cooling') {
-      coolingTokens++;
-    } else {
-      invalidTokens++;
-    }
-    if (t.tags && t.tags.includes('nsfw')) {
-      nsfwTokens++;
-    } else {
-      noNsfwTokens++;
-    }
-    totalCalls += Number(t.use_count || 0);
-  });
+  setText('stat-total', stats.totalTokens.toLocaleString());
+  setText('stat-active', stats.activeTokens.toLocaleString());
+  setText('stat-cooling', stats.coolingTokens.toLocaleString());
+  setText('stat-invalid', stats.invalidTokens.toLocaleString());
 
-  const imageQuota = Math.floor(chatQuota / 2);
-
-  setText('stat-total', totalTokens.toLocaleString());
-  setText('stat-active', activeTokens.toLocaleString());
-  setText('stat-cooling', coolingTokens.toLocaleString());
-  setText('stat-invalid', invalidTokens.toLocaleString());
-
-  setText('stat-chat-quota', chatQuota.toLocaleString());
+  setText('stat-chat-quota', stats.chatQuota.toLocaleString());
   setText('stat-image-quota', imageQuota.toLocaleString());
-  setText('stat-total-calls', totalCalls.toLocaleString());
+  setText('stat-total-calls', stats.totalCalls.toLocaleString());
 
   updateTabCounts({
-    all: totalTokens,
-    active: activeTokens,
-    cooling: coolingTokens,
-    expired: invalidTokens,
-    nsfw: nsfwTokens,
-    'no-nsfw': noNsfwTokens
+    all: stats.totalTokens,
+    active: stats.activeTokens,
+    cooling: stats.coolingTokens,
+    expired: stats.invalidTokens,
+    nsfw: stats.nsfwTokens,
+    'no-nsfw': stats.noNsfwTokens
   });
 }
 
 function renderTable() {
   const tbody = byId('token-table-body');
-  const loading = byId('loading');
   const emptyState = byId('empty-state');
-
-  if (loading) loading.classList.add('hidden');
+  hideLoadingText();
 
   // 获取筛选后的列表
   const { totalCount, totalPages, visibleTokens } = getPaginationData();
-  const indexByRef = new Map(flatTokens.map((t, i) => [t, i]));
 
   updatePaginationControls(totalCount, totalPages);
 
@@ -246,7 +262,7 @@ function renderTable() {
   const fragment = document.createDocumentFragment();
   visibleTokens.forEach((item) => {
     // 获取原始索引用于操作
-    const originalIndex = indexByRef.get(item);
+    const originalIndex = item._index;
     const tr = document.createElement('tr');
     tr.dataset.index = originalIndex;
     if (item._selected) tr.classList.add('row-selected');
@@ -384,7 +400,7 @@ function setupSelectAllMenu() {
 
 function handleSelectAllPrimary(event) {
   if (event) event.stopPropagation();
-  const selected = countSelected(flatTokens);
+  const selected = selectedCount;
   if (selected > 0) {
     clearAllSelection();
     return;
@@ -407,9 +423,9 @@ function selectAllFilteredFromMenu() {
 }
 
 function selectAllFiltered() {
-  const filtered = getFilteredTokens();
-  if (filtered.length === 0) return;
-  setSelectedForTokens(filtered, true);
+  const filteredIndices = getCurrentFilterIndices();
+  if (filteredIndices.length === 0) return;
+  setSelectedForTokens(filteredIndices.map(index => flatTokens[index]), true);
   syncVisibleSelectionUI(true);
   updateSelectionState();
   closeSelectAllMenu();
@@ -433,14 +449,16 @@ function clearAllSelection() {
 }
 
 function toggleSelect(index) {
-  flatTokens[index]._selected = !flatTokens[index]._selected;
+  const item = flatTokens[index];
+  if (!item) return;
+  item._selected = !item._selected;
+  selectedCount += item._selected ? 1 : -1;
   const row = document.querySelector(`#token-table-body tr[data-index="${index}"]`);
-  if (row) row.classList.toggle('row-selected', flatTokens[index]._selected);
+  if (row) row.classList.toggle('row-selected', item._selected);
   updateSelectionState();
 }
 
 function updateSelectionState() {
-  const selectedCount = countSelected(flatTokens);
   const visible = getVisibleTokens();
   const visibleSelected = countSelected(visible);
   const selectAll = byId('select-all');
@@ -566,7 +584,7 @@ async function saveEdit() {
     if (!token) return showToast(t('token.tokenEmpty'), 'error');
 
     // Check if exists
-    if (flatTokens.some(t => t.token === token)) {
+    if (tokenLookup.has(token)) {
       return showToast(t('token.tokenExists'), 'error');
     }
 
@@ -579,6 +597,7 @@ async function saveEdit() {
       use_count: 0,
       _selected: false
     });
+    tokenLookup.add(token);
   }
 
   await syncToServer();
@@ -591,6 +610,9 @@ async function saveEdit() {
 async function deleteToken(index) {
   const ok = await confirmAction(t('token.confirmDelete'), { okText: t('common.delete') });
   if (!ok) return;
+  const removed = flatTokens[index];
+  if (removed && removed._selected) selectedCount -= 1;
+  if (removed) tokenLookup.delete(removed.token);
   flatTokens.splice(index, 1);
   syncToServer().then(loadData);
 }
@@ -661,6 +683,10 @@ async function batchEnableTokens() {
 
 // Reconstruct object structure and save
 async function syncToServer() {
+  rebuildTokenPageState();
+  updateStats();
+  updateSelectionState();
+
   const newTokens = {};
   flatTokens.forEach(t => {
     if (!newTokens[t.pool]) newTokens[t.pool] = [];
@@ -717,7 +743,7 @@ async function submitImport() {
 
   lines.forEach(line => {
     const t = line.trim();
-    if (t && !flatTokens.some(ft => ft.token === t)) {
+    if (t && !tokenLookup.has(t)) {
       flatTokens.push({
         token: t,
         pool: pool,
@@ -729,6 +755,7 @@ async function submitImport() {
         use_count: 0,
         _selected: false
       });
+      tokenLookup.add(t);
     }
   });
 
@@ -956,10 +983,10 @@ function updateBatchProgress() {
   if (stopBtn) stopBtn.classList.remove('hidden');
 }
 
-function setActionButtonsState(selectedCount = null) {
-  let count = selectedCount;
+function setActionButtonsState(selectedCountValue = null) {
+  let count = selectedCountValue;
   if (count === null) {
-    count = countSelected(flatTokens);
+    count = selectedCount;
   }
   const disabled = isBatchProcessing;
   const exportBtn = byId('btn-batch-export');
@@ -999,6 +1026,8 @@ async function startBatchDelete() {
   try {
     const toRemove = new Set(batchQueue);
     flatTokens = flatTokens.filter(t => !toRemove.has(t.token));
+    tokenLookup = new Set(flatTokens.map(t => t.token));
+    selectedCount = 0;
     await syncToServer();
     batchProcessed = batchTotal;
     updateBatchProgress();
@@ -1087,26 +1116,18 @@ function filterByStatus(status) {
 }
 
 function getFilteredTokens() {
-  if (currentFilter === 'all') return flatTokens;
-
-  return flatTokens.filter(t => {
-    if (currentFilter === 'active') return t.status === 'active';
-    if (currentFilter === 'cooling') return t.status === 'cooling';
-    if (currentFilter === 'expired') return t.status !== 'active' && t.status !== 'cooling';
-    if (currentFilter === 'nsfw') return t.tags && t.tags.includes('nsfw');
-    if (currentFilter === 'no-nsfw') return !t.tags || !t.tags.includes('nsfw');
-    return true;
-  });
+  return getCurrentFilterIndices().map(index => flatTokens[index]);
 }
 
 function updateTabCounts(counts) {
+  const stats = tokenPageState.stats || TokenPageState.createEmptyStats();
   const safeCounts = counts || {
-    all: flatTokens.length,
-    active: flatTokens.filter(t => t.status === 'active').length,
-    cooling: flatTokens.filter(t => t.status === 'cooling').length,
-    expired: flatTokens.filter(t => t.status !== 'active' && t.status !== 'cooling').length,
-    nsfw: flatTokens.filter(t => t.tags && t.tags.includes('nsfw')).length,
-    'no-nsfw': flatTokens.filter(t => !t.tags || !t.tags.includes('nsfw')).length
+    all: stats.totalTokens,
+    active: stats.activeTokens,
+    cooling: stats.coolingTokens,
+    expired: stats.invalidTokens,
+    nsfw: stats.nsfwTokens,
+    'no-nsfw': stats.noNsfwTokens
   };
 
   Object.entries(safeCounts).forEach(([key, count]) => {
@@ -1156,7 +1177,7 @@ function goPrevPage() {
 }
 
 function goNextPage() {
-  const totalCount = getFilteredTokens().length;
+  const totalCount = getCurrentFilterIndices().length;
   const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
   if (currentPage >= totalPages) return;
   currentPage += 1;

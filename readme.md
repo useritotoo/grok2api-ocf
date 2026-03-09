@@ -60,12 +60,29 @@ docker compose up -d
 >
 > 持久化请使用 MySQL / Redis / PostgreSQL，并设置：`SERVER_STORAGE_TYPE` 与 `SERVER_STORAGE_URL`。
 
+### Cloudflare Worker 部署
+
+Cloudflare Worker 版位于 `cloudflare-worker/` 子目录，适合先 fork 本项目到自己的 GitHub 仓库，再通过 Cloudflare Dashboard 连接 GitHub 自动部署。
+
+1. 先 fork 本项目到你自己的 GitHub 账号，并确认 fork 仓库里已经包含最新代码。
+2. 登录 Cloudflare Dashboard，进入 `Workers & Pages`，点击创建应用并选择从 GitHub 导入仓库。
+3. 按提示连接 GitHub 后，选择你 fork 的这个仓库。
+4. 在构建设置中填写：
+   - `Root directory`: `cloudflare-worker`
+   - `Build command`: `npm run build`
+   - `Deploy command`: `npm run deploy`
+5. 点击部署并等待构建完成。当前 Worker 子项目会根据 `wrangler.toml` 自动创建和绑定所需的 D1、KV 资源。
+6. 部署完成后，访问 `https://<你的 Worker 域名>/admin` 打开控制台，首次默认管理员密码为 `admin`，登录后建议立即修改 `app.app_key`。
+
+更多 Worker 版说明可查看 [cloudflare-worker/README.md](cloudflare-worker/README.md)。
+
 <br>
 
 ## 管理面板
 
 - 访问地址：`http://<host>:<port>/admin`（本地运行使用 `SERVER_PORT`，Docker Compose 使用 `HOST_PORT`，默认均为 `8000`）
-- 默认密码：`grok2api`（配置项 `app.app_key`，建议修改）
+- Python / Docker / Vercel / Render 版默认密码：`grok2api`（配置项 `app.app_key`，建议修改）
+- Cloudflare Worker 版首次部署默认密码：`admin`
 
 **功能说明**：
 
