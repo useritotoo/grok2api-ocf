@@ -13,11 +13,6 @@ import { getFaviconAssetPath, getStaticPagePath } from "./sitePaths";
 
 const app = new Hono<{ Bindings: Env }>();
 
-app.use("*", async (c, next) => {
-  await ensureDbSchema(c.env.DB);
-  await next();
-});
-
 function getAssets(env: Env): Fetcher | null {
   const anyEnv = env as unknown as { ASSETS?: unknown };
   const assets = anyEnv.ASSETS as { fetch?: unknown } | undefined;

@@ -142,7 +142,13 @@ function parseSection(
   }
 }
 
+async function ensureCurrentConfigSchema(env: Env): Promise<void> {
+  const { ensureDbSchema } = await import("./schema");
+  await ensureDbSchema(env.DB);
+}
+
 export async function getCurrentConfig(env: Env): Promise<CurrentConfig> {
+  await ensureCurrentConfigSchema(env);
   const result = {} as CurrentConfig;
   for (const key of CONFIG_KEYS) {
     const row = await env.DB.prepare("SELECT value FROM settings WHERE key = ?")
@@ -157,6 +163,7 @@ export async function updateCurrentConfig(
   env: Env,
   updates: Partial<CurrentConfig>,
 ): Promise<CurrentConfig> {
+  await ensureCurrentConfigSchema(env);
   const current = await getCurrentConfig(env);
   const next = { ...current } as CurrentConfig;
   const now = Date.now();
