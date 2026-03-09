@@ -26,18 +26,19 @@ Cloudflare Worker 的代码、`wrangler.toml`、迁移文件、静态资源同�
 3. `Deploy command`: `npm run deploy`
 4. `Version command`: `npm run deploy:upload`
 
-这样第一次部署时会执行：
+这样在 Connected Builds 里会执行：
 
 1. 同步主仓库静态资源到 `cloudflare-worker/.assets`
 2. 做 TypeScript 类型检查
 3. `wrangler deploy`
-4. `wrangler d1 migrations apply DB --remote`
 
-也就是说，首次部署不只会发布 Worker，还会把 D1 表结构和初始化配置一并导入。
+部署链路里故意不再追加 `wrangler d1 migrations apply DB --remote`。因为 Cloudflare Dashboard 自动 provision 的 D1 绑定在构建环境里没有写回仓库内的 `database_id`，强行在 deploy 命令里跑远程 migration 会让整次构建在发布成功后反而失败。
+
+D1 表结构和初始化配置改为由 Worker 运行时自动补齐：首次请求进入 Worker 时会执行 `ensureDbSchema`，定时任务执行时也会再次确保基础表结构存在。
 
 ## 首次部署默认内容
 
-首次迁移或运行时初始化后，D1 内会自动写入当前主线管理页需要的配置分区，例如：
+首次请求或定时任务触发初始化后，D1 内会自动写入当前主线管理页需要的配置分区，例如：
 
 - `app`
 - `proxy`
@@ -88,7 +89,7 @@ npm run sync-assets
 如果要本地手动发布：
 
 ```bash
-npm run deploy
+npm run deploy:local
 ```
 
 ## 运行说明
