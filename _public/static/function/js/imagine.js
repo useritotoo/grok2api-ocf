@@ -730,12 +730,17 @@
     wsConnections = [];
 
     for (let i = 0; i < taskIds.length; i++) {
-      const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-      const params = new URLSearchParams({ task_id: taskIds[i] });
-      if (rawPublicKey) {
-        params.set('function_key', rawPublicKey);
-      }
-      const wsUrl = `${protocol}://${window.location.host}/v1/function/imagine/ws?${params.toString()}`;
+      const wsUrl = (window.FunctionTransport && typeof FunctionTransport.buildImagineWsUrl === 'function')
+        ? FunctionTransport.buildImagineWsUrl({
+            protocol: window.location.protocol,
+            host: window.location.host,
+            taskId: taskIds[i],
+            functionKey: rawPublicKey
+          })
+        : `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/v1/function/imagine/ws?${new URLSearchParams({
+            task_id: taskIds[i],
+            ...(rawPublicKey ? { function_key: rawPublicKey } : {})
+          }).toString()}`;
       const ws = new WebSocket(wsUrl);
 
       ws.onopen = () => {

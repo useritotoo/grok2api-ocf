@@ -1,6 +1,5 @@
 import { Hono } from "hono";
 import { getDynamicHeaders } from "../grok/headers";
-import { generateImagineWs } from "../grok/imagineExperimental";
 import { getCurrentConfig } from "../currentConfig";
 import type { Env } from "../env";
 import {
@@ -21,6 +20,7 @@ import {
 } from "../repo/functionSessions";
 import { applyCooldown, recordTokenFailure, selectBestToken } from "../repo/tokens";
 import { getSettings, normalizeCfCookie } from "../settings";
+import { buildInternalRequestUrl } from "./functionHelpers";
 
 interface ImagineSessionPayload {
   prompt: string;
@@ -36,27 +36,6 @@ interface VideoSessionPayload {
   preset: "fun" | "normal" | "spicy" | "custom";
   image_url: string | null;
   reasoning_effort: string | null;
-}
-
-function base64UrlEncodeString(input: string): string {
-  const bytes = new TextEncoder().encode(input);
-  let binary = "";
-  for (const b of bytes) binary += String.fromCharCode(b);
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
-}
-
-function encodeAssetPath(raw: string): string {
-  try {
-    const url = new URL(raw);
-    return `u_${base64UrlEncodeString(url.toString())}`;
-  } catch {
-    const pathname = raw.startsWith("/") ? raw : `/${raw}`;
-    return `p_${base64UrlEncodeString(pathname)}`;
-  }
-}
-
-function buildProxyImageUrl(origin: string, rawUrl: string): string {
-  return `${origin}/images/${encodeURIComponent(encodeAssetPath(rawUrl))}`;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -158,13 +137,158 @@ async function buildInternalRequest(
   pathname: string,
   init: RequestInit,
 ): Promise<Request> {
-  const url = new URL(pathname, "https://internal.grok2api.local");
+  const url = new URL(buildInternalRequestUrl(c.req.url, pathname));
   const headers = new Headers(init.headers);
   const masterToken = await getInternalMasterToken(c.env);
   if (masterToken) {
     headers.set("Authorization", `Bearer ${masterToken}`);
   }
   return new Request(url.toString(), { ...init, headers });
+}
+
+interface ImagineImageResultItem {
+  url?: unknown;
+  b64_json?: unknown;
+  base64?: unknown;
+}
+
+function buildImagineGenerationBody(payload: ImagineSessionPayload): Record<string, unknown> {
+  return {
+    model: "grok-imagine-1.0",
+    prompt: payload.prompt,
+    n: 6,
+    stream: false,
+    response_format: "url",
+    aspect_ratio: payload.aspect_ratio,
+    concurrency: 1,
+  };
+}
+
+async function runImagineBatch(
+  c: any,
+  payload: ImagineSessionPayload,
+): Promise<string[]> {
+  const request = await buildInternalRequest(c, "/images/generations", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(buildImagineGenerationBody(payload)),
+  });
+
+  const response = await openAiRoutes.fetch(request, c.env, c.executionCtx);
+  const bodyText = await response.text();
+  let parsed: Record<string, unknown> | null = null;
+  if (bodyText) {
+    try {
+      parsed = JSON.parse(bodyText) as Record<string, unknown>;
+    } catch {
+      parsed = null;
+    }
+  }
+
+  if (!response.ok) {
+    const errorRecord =
+      parsed && parsed.error && typeof parsed.error === "object"
+        ? (parsed.error as Record<string, unknown>)
+        : null;
+    const message =
+      String(errorRecord?.message ?? parsed?.message ?? bodyText ?? "").trim() ||
+      `Image generation failed (${response.status})`;
+    throw new Error(message);
+  }
+
+  const data = Array.isArray(parsed?.data) ? (parsed?.data as ImagineImageResultItem[]) : [];
+  const images = data
+    .map((item) => String(item.url ?? item.b64_json ?? item.base64 ?? "").trim())
+    .filter(Boolean);
+
+  if (!images.length) {
+    throw new Error("Image generation returned empty data.");
+  }
+
+  return images;
+}
+
+const MAX_IMAGINE_CONSECUTIVE_FAILURES = 3;
+
+async function runImagineLoop(args: {
+  c: any;
+  payload: ImagineSessionPayload;
+  isActive: () => boolean | Promise<boolean>;
+  send: (payload: Record<string, unknown>) => boolean | Promise<boolean>;
+}): Promise<void> {
+  const runId = crypto.randomUUID().replaceAll("-", "");
+  let sequence = 0;
+  let failures = 0;
+
+  const safeSend = async (payload: Record<string, unknown>): Promise<boolean> => {
+    try {
+      return (await args.send(payload)) !== false;
+    } catch {
+      return false;
+    }
+  };
+
+  if (
+    !(await safeSend({
+      type: "status",
+      status: "running",
+      prompt: args.payload.prompt,
+      aspect_ratio: args.payload.aspect_ratio,
+      run_id: runId,
+    }))
+  ) {
+    return;
+  }
+
+  while (await args.isActive()) {
+    const batchStart = Date.now();
+    try {
+      const images = await runImagineBatch(args.c, args.payload);
+      failures = 0;
+
+      for (const image of images) {
+        if (!(await args.isActive())) break;
+        sequence += 1;
+        const field = image.startsWith("data:") ? "b64_json" : "url";
+        const delivered = await safeSend({
+          type: "image_generation.completed",
+          image_id: `${runId}-${sequence - 1}`,
+          [field]: image,
+          sequence,
+          elapsed_ms: Date.now() - batchStart,
+          aspect_ratio: args.payload.aspect_ratio,
+          run_id: runId,
+        });
+        if (!delivered) return;
+      }
+    } catch (error) {
+      failures += 1;
+      const message = error instanceof Error ? error.message : String(error);
+      const delivered = await safeSend({
+        type: "error",
+        message,
+        code: "internal_error",
+        run_id: runId,
+      });
+      if (!delivered) return;
+      if (failures >= MAX_IMAGINE_CONSECUTIVE_FAILURES) {
+        await safeSend({
+          type: "error",
+          message: "Image generation stopped after repeated failures.",
+          code: "stopped_after_failures",
+          run_id: runId,
+        });
+        break;
+      }
+      await sleep(1500);
+    }
+  }
+
+  await safeSend({
+    type: "status",
+    status: "stopped",
+    run_id: runId,
+  });
 }
 
 async function buildVoiceTokenResponse(
@@ -302,105 +426,43 @@ functionRoutes.get("/v1/function/imagine/sse", async (c) => {
     return c.json({ error: "Task not found", code: "TASK_NOT_FOUND" }, 404);
   }
 
-  const settings = await getSettings(c.env);
-  const origin = new URL(c.req.url).origin;
   const encoder = new TextEncoder();
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       let active = true;
-      let sequence = 0;
-      const runId = crypto.randomUUID().replaceAll("-", "");
       const rawSignal = c.req.raw.signal;
 
       const stop = async () => {
         if (!active) return;
         active = false;
         await deleteFunctionSessions(c.env.DB, [taskId], "imagine");
-        enqueueSse(controller, encoder, {
-          type: "status",
-          status: "stopped",
-          run_id: runId,
-        });
-        controller.close();
+        try {
+          controller.close();
+        } catch {
+          // ignore close failure
+        }
       };
 
       try {
-        enqueueSse(controller, encoder, {
-          type: "status",
-          status: "running",
-          prompt: session.payload.prompt,
-          aspect_ratio: session.payload.aspect_ratio,
-          run_id: runId,
+        await runImagineLoop({
+          c,
+          payload: session.payload,
+          isActive: async () => {
+            if (!active || rawSignal.aborted) return false;
+            const stillExists = await getFunctionSession<ImagineSessionPayload>(
+              c.env.DB,
+              taskId,
+              "imagine",
+            );
+            return Boolean(stillExists);
+          },
+          send: (payload) => {
+            if (!active || rawSignal.aborted) return false;
+            enqueueSse(controller, encoder, payload);
+            return true;
+          },
         });
-
-        while (active && !rawSignal.aborted) {
-          const stillExists = await getFunctionSession<ImagineSessionPayload>(
-            c.env.DB,
-            taskId,
-            "imagine",
-          );
-          if (!stillExists) break;
-
-          const chosen = await selectBestToken(c.env.DB, "grok-imagine-1.0");
-          if (!chosen) {
-            enqueueSse(controller, encoder, {
-              type: "error",
-              message: "No available tokens. Please try again later.",
-              code: "rate_limit_exceeded",
-            });
-            await sleep(2000);
-            continue;
-          }
-
-          const cf = normalizeCfCookie(settings.grok.cf_clearance ?? "");
-          const cookie = cf
-            ? `sso-rw=${chosen.token};sso=${chosen.token};${cf}`
-            : `sso-rw=${chosen.token};sso=${chosen.token}`;
-          const batchStart = Date.now();
-
-          try {
-            await generateImagineWs({
-              prompt: session.payload.prompt,
-              n: 6,
-              cookie,
-              settings: settings.grok,
-              aspectRatio: session.payload.aspect_ratio,
-              progressCb: async ({ index, progress }) => {
-                if (!active || rawSignal.aborted) return;
-                enqueueSse(controller, encoder, {
-                  type: "image_generation.partial_image",
-                  image_id: `${runId}-${index}`,
-                  progress,
-                  run_id: runId,
-                });
-              },
-              completedCb: async ({ index, url }) => {
-                if (!active || rawSignal.aborted) return;
-                sequence += 1;
-                enqueueSse(controller, encoder, {
-                  type: "image_generation.completed",
-                  image_id: `${runId}-${index}`,
-                  url: buildProxyImageUrl(origin, url),
-                  sequence,
-                  elapsed_ms: Date.now() - batchStart,
-                  aspect_ratio: session.payload.aspect_ratio,
-                  run_id: runId,
-                });
-              },
-            });
-          } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            await recordTokenFailure(c.env.DB, chosen.token, 500, message.slice(0, 200));
-            await applyCooldown(c.env.DB, chosen.token, 500);
-            enqueueSse(controller, encoder, {
-              type: "error",
-              message,
-              code: "internal_error",
-            });
-            await sleep(1500);
-          }
-        }
       } catch (error) {
         enqueueSse(controller, encoder, {
           type: "error",
@@ -466,80 +528,15 @@ functionRoutes.get("/v1/function/imagine/ws", async (c) => {
   const startLoop = (payload: ImagineSessionPayload): void => {
     runVersion += 1;
     const localRunVersion = runVersion;
-    const settingsPromise = getSettings(c.env);
-    const origin = new URL(c.req.url).origin;
-    const runId = crypto.randomUUID().replaceAll("-", "");
-    let sequence = 0;
     running = true;
 
-    send({
-      type: "status",
-      status: "running",
-      prompt: payload.prompt,
-      aspect_ratio: payload.aspect_ratio,
-      run_id: runId,
-    });
-
     void (async () => {
-      const settings = await settingsPromise;
-      while (!closed && running && localRunVersion === runVersion) {
-        const chosen = await selectBestToken(c.env.DB, "grok-imagine-1.0");
-        if (!chosen) {
-          send({
-            type: "error",
-            message: "No available tokens. Please try again later.",
-            code: "rate_limit_exceeded",
-          });
-          await sleep(2000);
-          continue;
-        }
-
-        const cf = normalizeCfCookie(settings.grok.cf_clearance ?? "");
-        const cookie = cf
-          ? `sso-rw=${chosen.token};sso=${chosen.token};${cf}`
-          : `sso-rw=${chosen.token};sso=${chosen.token}`;
-        const batchStart = Date.now();
-
-        try {
-          await generateImagineWs({
-            prompt: payload.prompt,
-            n: 6,
-            cookie,
-            settings: settings.grok,
-            aspectRatio: payload.aspect_ratio,
-            progressCb: async ({ index, progress }) => {
-              if (closed || !running || localRunVersion !== runVersion) return;
-              send({
-                type: "image_generation.partial_image",
-                image_id: `${runId}-${index}`,
-                progress,
-                run_id: runId,
-              });
-            },
-            completedCb: async ({ index, url }) => {
-              if (closed || !running || localRunVersion !== runVersion) return;
-              sequence += 1;
-              send({
-                type: "image_generation.completed",
-                image_id: `${runId}-${index}`,
-                url: buildProxyImageUrl(origin, url),
-                sequence,
-                elapsed_ms: Date.now() - batchStart,
-                aspect_ratio: payload.aspect_ratio,
-                run_id: runId,
-              });
-            },
-          });
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          await recordTokenFailure(c.env.DB, chosen.token, 500, message.slice(0, 200));
-          await applyCooldown(c.env.DB, chosen.token, 500);
-          send({ type: "error", message, code: "internal_error" });
-          await sleep(1500);
-        }
-      }
-
-      send({ type: "status", status: "stopped", run_id: runId });
+      await runImagineLoop({
+        c,
+        payload,
+        isActive: () => !closed && running && localRunVersion === runVersion,
+        send,
+      });
     })();
   };
 
