@@ -442,6 +442,8 @@
     "genSettings": "Generation Settings",
     "prompt": "Prompt",
     "promptPlaceholder": "Describe the image you want, e.g.: futuristic city neon rain at night, wide angle photography",
+    "referenceImage": "Reference Image",
+    "referenceImagePlaceholder": "https://... or data:image/...",
     "autoFollow": "Auto Follow",
     "autoFollowDesc": "Scroll to latest",
     "autoSave": "Auto Save",
@@ -481,6 +483,8 @@
     "selectAll": "Select all",
     "deselectAll": "Deselect all",
     "download": "Download",
+    "upload": "Upload",
+    "clearImage": "Clear",
     "startedTasks": "Started {count} concurrent tasks",
     "startedTasksSSE": "Started {count} concurrent tasks (SSE)",
     "generatingSSE": "Generating (SSE)",
@@ -494,7 +498,9 @@
     "noImagesDownloaded": "No images were downloaded successfully",
     "generatingZip": "Generating ZIP...",
     "packSuccess": "Successfully packed {count} images",
-    "packFailed": "Packing failed, please try again"
+    "packFailed": "Packing failed, please try again",
+    "referenceConflict": "Reference image: choose either URL/Base64 or file upload",
+    "uploadFailed": "Upload failed"
   },
   "video": {
     "pageTitle": "Grok2API - Video Generation",
@@ -535,6 +541,7 @@
     "superResolutionInProgress": "Super resolution in progress",
     "alreadyGenerating": "Already generating",
     "referenceConflict": "Reference image: choose either URL/Base64 or file upload",
+    "uploadFailed": "Upload failed",
     "downloadFailed": "Download failed, please check if the video link is accessible",
     "sec6": "6s",
     "sec10": "10s",

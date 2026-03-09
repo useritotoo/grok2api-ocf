@@ -154,7 +154,7 @@
   --row-h: 52px;
   display: grid;
   grid-template-columns: 2.2fr 1fr;
-  grid-template-rows: calc(var(--row-h) * 2 + var(--row-gap)) var(--row-h) var(--row-h);
+  grid-template-rows: calc(var(--row-h) * 2 + var(--row-gap)) var(--row-h) auto var(--row-h);
   column-gap: 16px;
   row-gap: var(--row-gap);
   align-items: stretch;
@@ -193,11 +193,16 @@
 
 .settings-block-row3 {
   grid-column: 1;
-  grid-row: 3;
+  grid-row: 4;
 }
 
 .settings-block-row3b {
   grid-column: 2;
+  grid-row: 4;
+}
+
+.settings-block-reference {
+  grid-column: 1 / span 2;
   grid-row: 3;
 }
 
@@ -230,6 +235,32 @@
 
 .settings-field .field-label {
   margin-bottom: 0;
+}
+
+.reference-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.reference-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.reference-file-input {
+  display: none;
+}
+
+.reference-meta {
+  margin-top: 6px;
+}
+
+.reference-name {
+  font-size: 11px;
+  color: var(--accents-4);
 }
 
 .toggle-row {
@@ -312,6 +343,7 @@
   .settings-block-duo,
   .settings-block-row2,
   .settings-block-row2b,
+  .settings-block-reference,
   .settings-block-row3,
   .settings-block-row3b {
     grid-column: 1;
@@ -322,6 +354,18 @@
     height: auto;
     display: flex;
     flex-direction: column;
+  }
+
+  .reference-controls {
+    grid-template-columns: 1fr;
+  }
+
+  .reference-actions {
+    width: 100%;
+  }
+
+  .reference-actions .geist-button-outline {
+    flex: 1;
   }
 }
 

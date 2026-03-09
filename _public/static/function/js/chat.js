@@ -37,6 +37,7 @@
   let isSending = false;
   let abortController = null;
   let attachment = null;
+  let attachmentLoading = null;
   let activeStreamInfo = null;
   const feedbackUrl = 'https://github.com/chenyme/grok2api/issues/new';
   const CHAT_COMPLETIONS_ENDPOINT = '/v1/function/chat/completions';
@@ -1391,6 +1392,7 @@
 
   function clearAttachment() {
     attachment = null;
+    attachmentLoading = null;
     if (fileInput) fileInput.value = '';
     showAttachmentBadge();
   }
@@ -1407,14 +1409,18 @@
   async function handleFileSelect(file) {
     if (!file) return;
     try {
-      const dataUrl = await readFileAsDataUrl(file);
+      attachmentLoading = readFileAsDataUrl(file);
+      const dataUrl = await attachmentLoading;
       attachment = {
         name: file.name || 'file',
+        type: file.type || '',
         data: dataUrl
       };
       showAttachmentBadge();
     } catch (e) {
       toast(t('common.fileReadFailed'), 'error');
+    } finally {
+      attachmentLoading = null;
     }
   }
 
@@ -1529,6 +1535,13 @@
 
   async function sendMessage() {
     if (isSending) return;
+    if (attachmentLoading) {
+      try {
+        await attachmentLoading;
+      } catch (e) {
+        return;
+      }
+    }
     const prompt = promptInput ? promptInput.value.trim() : '';
     if (!prompt && !attachment) {
       toast(t('common.enterContent'), 'error');
@@ -1549,7 +1562,14 @@
       if (prompt) {
         blocks.push({ type: 'text', text: prompt });
       }
-      blocks.push({ type: 'file', file: { file_data: attachment.data } });
+      blocks.push({
+        type: 'file',
+        file: {
+          file_data: attachment.data,
+          mime_type: attachment.type || '',
+          filename: attachment.name || 'file'
+        }
+      });
       content = blocks;
     }
 

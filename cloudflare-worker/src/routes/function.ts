@@ -26,6 +26,7 @@ interface ImagineSessionPayload {
   prompt: string;
   aspect_ratio: string;
   nsfw: boolean | null;
+  image_reference: string | null;
 }
 
 interface VideoSessionPayload {
@@ -34,7 +35,7 @@ interface VideoSessionPayload {
   video_length: number;
   resolution_name: "480p" | "720p";
   preset: "fun" | "normal" | "spicy" | "custom";
-  image_url: string | null;
+  image_reference: string | null;
   reasoning_effort: string | null;
 }
 
@@ -110,11 +111,23 @@ function normalizeReasoningEffort(input: unknown): string | null {
   return value;
 }
 
+function extractImageReference(input: unknown): string | null {
+  if (typeof input === "string") {
+    const value = input.trim();
+    return value || null;
+  }
+  if (input && typeof input === "object") {
+    const url = String((input as Record<string, unknown>).image_url ?? "").trim();
+    return url || null;
+  }
+  return null;
+}
+
 function buildVideoChatBody(payload: VideoSessionPayload): Record<string, unknown> {
-  const content = payload.image_url
+  const content = payload.image_reference
     ? [
         { type: "text", text: payload.prompt },
-        { type: "image_url", image_url: { url: payload.image_url } },
+        { type: "image_url", image_url: { url: payload.image_reference } },
       ]
     : payload.prompt;
 
@@ -152,9 +165,26 @@ interface ImagineImageResultItem {
   base64?: unknown;
 }
 
+export function resolveImagineGenerationTarget(imageReference: unknown): {
+  path: "/images/generations" | "/images/edits";
+  model: "grok-imagine-1.0" | "grok-imagine-1.0-edit";
+} {
+  const reference = String(imageReference ?? "").trim();
+  if (reference) {
+    return {
+      path: "/images/edits",
+      model: "grok-imagine-1.0-edit",
+    };
+  }
+  return {
+    path: "/images/generations",
+    model: "grok-imagine-1.0",
+  };
+}
+
 function buildImagineGenerationBody(payload: ImagineSessionPayload): Record<string, unknown> {
   return {
-    model: "grok-imagine-1.0",
+    model: resolveImagineGenerationTarget(payload.image_reference).model,
     prompt: payload.prompt,
     n: 6,
     stream: false,
@@ -164,15 +194,55 @@ function buildImagineGenerationBody(payload: ImagineSessionPayload): Record<stri
   };
 }
 
+async function buildImagineEditFormData(
+  c: any,
+  payload: ImagineSessionPayload,
+): Promise<FormData> {
+  const reference = String(payload.image_reference ?? "").trim();
+  if (!reference) {
+    throw new Error("Missing image reference for imagine edit.");
+  }
+
+  const referenceUrl = reference.startsWith("data:")
+    ? reference
+    : new URL(reference, c.req.url).toString();
+  const response = await fetch(referenceUrl, { redirect: "follow" });
+  if (!response.ok) {
+    throw new Error(`Failed to fetch imagine reference image (${response.status}).`);
+  }
+
+  const mime = String(response.headers.get("content-type") ?? "image/png").split(";")[0]?.trim() || "image/png";
+  if (!mime.startsWith("image/")) {
+    throw new Error("Imagine reference must be an image.");
+  }
+
+  const ext = mime === "image/jpeg" ? "jpg" : mime.split("/")[1] || "png";
+  const bytes = await response.arrayBuffer();
+  const file = new File([bytes], `reference.${ext}`, { type: mime });
+  const form = new FormData();
+  form.set("model", resolveImagineGenerationTarget(payload.image_reference).model);
+  form.set("prompt", payload.prompt);
+  form.set("n", "6");
+  form.set("response_format", "url");
+  form.append("image", file, file.name);
+  return form;
+}
+
 async function runImagineBatch(
   c: any,
   payload: ImagineSessionPayload,
 ): Promise<string[]> {
-  const request = await buildInternalRequest(c, "/images/generations", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(buildImagineGenerationBody(payload)),
-  });
+  const target = resolveImagineGenerationTarget(payload.image_reference);
+  const request = target.path === "/images/edits"
+    ? await buildInternalRequest(c, target.path, {
+        method: "POST",
+        body: await buildImagineEditFormData(c, payload),
+      })
+    : await buildInternalRequest(c, target.path, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(buildImagineGenerationBody(payload)),
+      });
 
   const response = await openAiRoutes.fetch(request, c.env, c.executionCtx);
   const bodyText = await response.text();
@@ -364,6 +434,15 @@ export const functionRoutes = new Hono<{ Bindings: Env }>();
 
 functionRoutes.use("/v1/function/*", requireFunctionAuth);
 
+functionRoutes.post("/v1/function/uploads/image", async (c) => {
+  const form = await c.req.formData();
+  const request = await buildInternalRequest(c, "/uploads/image", {
+    method: "POST",
+    body: form,
+  });
+  return openAiRoutes.fetch(request, c.env, c.executionCtx);
+});
+
 functionRoutes.get("/v1/function/verify", () => {
   return Response.json({ status: "success", success: true });
 });
@@ -399,13 +478,14 @@ functionRoutes.post("/v1/function/imagine/start", async (c) => {
 
   const aspectRatio = normalizeImagineAspectRatio(String(body.aspect_ratio ?? "2:3"));
   const nsfw = parseBoolean(body.nsfw);
+  const imageReference = extractImageReference(body.image_reference);
   const now = Date.now();
   const taskId = crypto.randomUUID().replaceAll("-", "");
 
   await upsertFunctionSession<ImagineSessionPayload>(c.env.DB, {
     task_id: taskId,
     kind: "imagine",
-    payload: { prompt, aspect_ratio: aspectRatio, nsfw },
+    payload: { prompt, aspect_ratio: aspectRatio, nsfw, image_reference: imageReference },
     created_at: now,
     expires_at: now + FUNCTION_SESSION_TTL_MS,
   });
@@ -571,6 +651,7 @@ functionRoutes.get("/v1/function/imagine/ws", async (c) => {
         String(payload.aspect_ratio ?? session?.payload.aspect_ratio ?? "2:3"),
       ),
       nsfw: parseBoolean(payload.nsfw ?? session?.payload.nsfw),
+      image_reference: extractImageReference(payload.image_reference) ?? session?.payload.image_reference ?? null,
     };
     startLoop(imaginePayload);
   });
@@ -605,7 +686,7 @@ functionRoutes.post("/v1/function/video/start", async (c) => {
     video_length: normalizeVideoLength(body.video_length),
     resolution_name: normalizeResolution(body.resolution_name),
     preset: normalizePreset(body.preset),
-    image_url: String(body.image_url ?? "").trim() || null,
+    image_reference: extractImageReference(body.image_reference) ?? (String(body.image_url ?? "").trim() || null),
     reasoning_effort: normalizeReasoningEffort(body.reasoning_effort),
   };
 

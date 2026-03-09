@@ -3,6 +3,11 @@
   const stopBtn = document.getElementById('stopBtn');
   const clearBtn = document.getElementById('clearBtn');
   const promptInput = document.getElementById('promptInput');
+  const imageUrlInput = document.getElementById('imageUrlInput');
+  const imageFileInput = document.getElementById('imageFileInput');
+  const imageFileName = document.getElementById('imageFileName');
+  const clearImageFileBtn = document.getElementById('clearImageFileBtn');
+  const selectImageFileBtn = document.getElementById('selectImageFileBtn');
   const ratioSelect = document.getElementById('ratioSelect');
   const concurrentSelect = document.getElementById('concurrentSelect');
   const autoScrollToggle = document.getElementById('autoScrollToggle');
@@ -35,7 +40,9 @@
   const MODE_STORAGE_KEY = 'imagine_mode';
   let pendingFallbackTimer = null;
   let currentTaskIds = [];
+  let currentReferenceUrl = '';
   let directoryHandle = null;
+  let selectedReferenceFile = null;
   let useFileSystemAPI = false;
   let isSelectionMode = false;
   let selectedImages = new Set();
@@ -217,14 +224,76 @@
     }
   }
 
-  async function createImagineTask(prompt, ratio, authHeader, nsfwEnabled) {
+  function clearReferenceSelection() {
+    selectedReferenceFile = null;
+    currentReferenceUrl = imageUrlInput ? imageUrlInput.value.trim() : currentReferenceUrl;
+    if (imageFileInput) {
+      imageFileInput.value = '';
+    }
+    if (imageFileName) {
+      imageFileName.textContent = t('common.noFileSelected');
+    }
+  }
+
+  async function uploadReferenceImage(authHeader, file) {
+    const form = new FormData();
+    form.append('file', file, file.name || 'reference.png');
+    const res = await fetch('/v1/function/uploads/image', {
+      method: 'POST',
+      headers: buildAuthHeaders(authHeader),
+      body: form,
+    });
+    const text = await res.text();
+    let payload = null;
+    try {
+      payload = text ? JSON.parse(text) : null;
+    } catch (e) {
+      payload = null;
+    }
+    if (!res.ok) {
+      const message = (payload && payload.error && payload.error.message) || text || t('common.requestFailed');
+      throw new Error(message);
+    }
+    const url = payload && payload.url ? String(payload.url) : '';
+    if (!url) {
+      throw new Error(t('imagine.uploadFailed') || 'Upload failed');
+    }
+    return url;
+  }
+
+  async function resolveReferenceImage(authHeader) {
+    const rawUrl = imageUrlInput ? imageUrlInput.value.trim() : '';
+    if (selectedReferenceFile && rawUrl) {
+      toast(t('imagine.referenceConflict'), 'error');
+      throw new Error('invalid_reference');
+    }
+    if (selectedReferenceFile) {
+      return uploadReferenceImage(authHeader, selectedReferenceFile);
+    }
+    return rawUrl || '';
+  }
+
+  async function createImagineTask(prompt, ratio, authHeader, nsfwEnabled, referenceUrl) {
+    const payload = (window.FunctionPayloads && typeof FunctionPayloads.buildImagineStartPayload === 'function')
+      ? FunctionPayloads.buildImagineStartPayload({
+          prompt,
+          aspectRatio: ratio,
+          nsfw: nsfwEnabled,
+          referenceUrl
+        })
+      : {
+          prompt,
+          aspect_ratio: ratio,
+          nsfw: nsfwEnabled,
+          image_reference: referenceUrl ? { image_url: referenceUrl } : undefined
+        };
     const res = await fetch('/v1/function/imagine/start', {
       method: 'POST',
       headers: {
         ...buildAuthHeaders(authHeader),
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({ prompt, aspect_ratio: ratio, nsfw: nsfwEnabled })
+      body: JSON.stringify(payload)
     });
     if (!res.ok) {
       const text = await res.text();
@@ -234,10 +303,10 @@
     return data && data.task_id ? String(data.task_id) : '';
   }
 
-  async function createImagineTasks(prompt, ratio, concurrent, authHeader, nsfwEnabled) {
+  async function createImagineTasks(prompt, ratio, concurrent, authHeader, nsfwEnabled, referenceUrl) {
     const tasks = [];
     for (let i = 0; i < concurrent; i++) {
-      const taskId = await createImagineTask(prompt, ratio, authHeader, nsfwEnabled);
+      const taskId = await createImagineTask(prompt, ratio, authHeader, nsfwEnabled, referenceUrl);
       if (!taskId) {
         throw new Error('Missing task id');
       }
@@ -695,12 +764,16 @@
     }
 
     let taskIds = [];
+    let referenceUrl = '';
     try {
-      taskIds = await createImagineTasks(prompt, ratio, concurrent, authHeader, nsfwEnabled);
+      referenceUrl = await resolveReferenceImage(authHeader);
+      currentReferenceUrl = referenceUrl;
+      taskIds = await createImagineTasks(prompt, ratio, concurrent, authHeader, nsfwEnabled, referenceUrl);
     } catch (e) {
       setStatus('error', t('common.createTaskFailed'));
       startBtn.disabled = false;
       isRunning = false;
+      currentReferenceUrl = '';
       return;
     }
     currentTaskIds = taskIds;
@@ -804,7 +877,8 @@
       type: 'start',
       prompt,
       aspect_ratio: ratio,
-      nsfw: nsfwEnabled
+      nsfw: nsfwEnabled,
+      ...(currentReferenceUrl ? { image_reference: { image_url: currentReferenceUrl } } : {})
     };
     ws.send(JSON.stringify(payload));
     updateError('');
@@ -823,6 +897,7 @@
 
     stopAllConnections();
     currentTaskIds = [];
+    currentReferenceUrl = '';
     isRunning = false;
     updateActive();
     updateModeValue();
@@ -866,6 +941,45 @@
       if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
         event.preventDefault();
         startConnection();
+      }
+    });
+  }
+
+  if (imageFileInput) {
+    imageFileInput.addEventListener('change', () => {
+      const file = imageFileInput.files && imageFileInput.files[0];
+      if (!file) {
+        clearReferenceSelection();
+        return;
+      }
+      if (imageUrlInput && imageUrlInput.value.trim()) {
+        imageUrlInput.value = '';
+      }
+      selectedReferenceFile = file;
+      if (imageFileName) {
+        imageFileName.textContent = file.name;
+      }
+    });
+  }
+
+  if (selectImageFileBtn && imageFileInput) {
+    selectImageFileBtn.addEventListener('click', () => {
+      imageFileInput.click();
+    });
+  }
+
+  if (clearImageFileBtn) {
+    clearImageFileBtn.addEventListener('click', () => {
+      clearReferenceSelection();
+      currentReferenceUrl = imageUrlInput ? imageUrlInput.value.trim() : '';
+    });
+  }
+
+  if (imageUrlInput) {
+    imageUrlInput.addEventListener('input', () => {
+      currentReferenceUrl = imageUrlInput.value.trim();
+      if (imageUrlInput.value.trim() && selectedReferenceFile) {
+        clearReferenceSelection();
       }
     });
   }

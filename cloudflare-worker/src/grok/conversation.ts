@@ -2,9 +2,22 @@ import type { GrokSettings } from "../settings";
 import { getDynamicHeaders } from "./headers";
 import { getModelInfo, toGrokModel } from "./models";
 
+export interface OpenAIChatContentPart {
+  type: string;
+  text?: string;
+  image_url?: { url?: string };
+  input_audio?: { data?: string };
+  file?: { url?: string; data?: string; file_data?: string } | string;
+}
+
 export interface OpenAIChatMessage {
   role: string;
-  content: string | Array<{ type: string; text?: string; image_url?: { url?: string } }>;
+  content: string | OpenAIChatContentPart[];
+}
+
+export interface ConversationAttachment {
+  kind: "image" | "file" | "audio";
+  value: string;
 }
 
 export interface OpenAIChatRequestBody {
@@ -21,8 +34,28 @@ export interface OpenAIChatRequestBody {
 
 export const CONVERSATION_API = "https://grok.com/rest/app-chat/conversations/new";
 
-export function extractContent(messages: OpenAIChatMessage[]): { content: string; images: string[] } {
-  const images: string[] = [];
+function extractFileValue(item: OpenAIChatContentPart): string {
+  if (!item) return "";
+  if (typeof item.file === "string") return String(item.file).trim();
+  if (item.file && typeof item.file === "object") {
+    return String(item.file.file_data ?? item.file.data ?? item.file.url ?? "").trim();
+  }
+  return "";
+}
+
+function isLikelyImageAttachment(value: string): boolean {
+  const candidate = String(value || "").trim().toLowerCase();
+  if (!candidate) return false;
+  if (candidate.startsWith("data:image/")) return true;
+  if (candidate.startsWith("/images/") || candidate.startsWith("/v1/files/image/")) return true;
+  return /\.(png|jpe?g|gif|webp|bmp|svg)(?:[?#].*)?$/.test(candidate);
+}
+
+export function extractContent(messages: OpenAIChatMessage[]): {
+  content: string;
+  attachments: ConversationAttachment[];
+} {
+  const attachments: ConversationAttachment[] = [];
   const extracted: Array<{ role: string; text: string }> = [];
 
   for (const msg of messages) {
@@ -38,7 +71,20 @@ export function extractContent(messages: OpenAIChatMessage[]): { content: string
         }
         if (item?.type === "image_url") {
           const url = item.image_url?.url;
-          if (url) images.push(url);
+          if (url) attachments.push({ kind: "image", value: url });
+        }
+        if (item?.type === "input_audio") {
+          const data = String(item.input_audio?.data ?? "").trim();
+          if (data) attachments.push({ kind: "audio", value: data });
+        }
+        if (item?.type === "file") {
+          const value = extractFileValue(item);
+          if (value) {
+            attachments.push({
+              kind: isLikelyImageAttachment(value) ? "image" : "file",
+              value,
+            });
+          }
         }
       }
     } else {
@@ -65,12 +111,13 @@ export function extractContent(messages: OpenAIChatMessage[]): { content: string
     else out.push(`${role}: ${text}`);
   }
 
-  return { content: out.join("\n\n"), images };
+  return { content: out.join("\n\n"), attachments };
 }
 
 export function buildConversationPayload(args: {
   requestModel: string;
   content: string;
+  fileIds: string[];
   imgIds: string[];
   imgUris: string[];
   postId?: string;
@@ -82,12 +129,12 @@ export function buildConversationPayload(args: {
   };
   settings: GrokSettings;
 }): { payload: Record<string, unknown>; referer?: string; isVideoModel: boolean } {
-  const { requestModel, content, imgIds, imgUris, postId, settings } = args;
+  const { requestModel, content, fileIds, imgIds, imgUris, postId, settings } = args;
   const cfg = getModelInfo(requestModel);
   const { grokModel, mode, isVideoModel } = toGrokModel(requestModel);
 
   if (cfg?.is_video_model) {
-    if (!postId) throw new Error("视频模型缺少 postId（需要先创建 media post）");
+    if (!postId) throw new Error("Video model requires a media post id.");
 
     const aspectRatio = (args.videoConfig?.aspect_ratio ?? "").trim() || "3:2";
     const videoLengthRaw = Number(args.videoConfig?.video_length ?? 6);
@@ -109,7 +156,7 @@ export function buildConversationPayload(args: {
         temporary: true,
         modelName: "grok-3",
         message: prompt,
-        fileAttachments: imgIds,
+        fileAttachments: [...fileIds, ...imgIds],
         toolOverrides: { videoGen: true },
         enableSideBySide: true,
         responseMetadata: {
@@ -135,7 +182,7 @@ export function buildConversationPayload(args: {
       temporary: settings.temporary ?? true,
       modelName: grokModel,
       message: content,
-      fileAttachments: imgIds,
+      fileAttachments: [...fileIds, ...imgIds],
       imageAttachments: [],
       disableSearch: false,
       enableImageGeneration: true,

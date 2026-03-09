@@ -31,7 +31,7 @@
   let contentBuffer = '';
   let collectingContent = false;
   let startAt = 0;
-  let fileDataUrl = '';
+  let selectedFile = null;
   let elapsedTimer = null;
   let lastProgress = 0;
   let currentPreviewItem = null;
@@ -229,7 +229,7 @@
   }
 
   function clearFileSelection() {
-    fileDataUrl = '';
+    selectedFile = null;
     if (imageFileInput) {
       imageFileInput.value = '';
     }
@@ -258,29 +258,73 @@
     return `${base}?${params.toString()}`;
   }
 
-  async function createVideoTask(authHeader) {
-    const prompt = promptInput ? promptInput.value.trim() : '';
+  async function uploadReferenceImage(authHeader, file) {
+    const form = new FormData();
+    form.append('file', file, file.name || 'reference.png');
+    const res = await fetch('/v1/function/uploads/image', {
+      method: 'POST',
+      headers: buildAuthHeaders(authHeader),
+      body: form,
+    });
+    const text = await res.text();
+    let payload = null;
+    try {
+      payload = text ? JSON.parse(text) : null;
+    } catch (e) {
+      payload = null;
+    }
+    if (!res.ok) {
+      const message = (payload && payload.error && payload.error.message) || text || t('common.requestFailed');
+      throw new Error(message);
+    }
+    const url = payload && payload.url ? String(payload.url) : '';
+    if (!url) {
+      throw new Error(t('video.uploadFailed') || 'Upload failed');
+    }
+    return url;
+  }
+
+  async function resolveReferenceImage(authHeader) {
     const rawUrl = imageUrlInput ? imageUrlInput.value.trim() : '';
-    if (fileDataUrl && rawUrl) {
+    if (selectedFile && rawUrl) {
       toast(t('video.referenceConflict'), 'error');
       throw new Error('invalid_reference');
     }
-    const imageUrl = fileDataUrl || rawUrl;
+    if (selectedFile) {
+      return uploadReferenceImage(authHeader, selectedFile);
+    }
+    return rawUrl || '';
+  }
+
+  async function createVideoTask(authHeader) {
+    const prompt = promptInput ? promptInput.value.trim() : '';
+    const imageUrl = await resolveReferenceImage(authHeader);
+    const payload = (window.FunctionPayloads && typeof FunctionPayloads.buildVideoStartPayload === 'function')
+      ? FunctionPayloads.buildVideoStartPayload({
+          prompt,
+          aspectRatio: ratioSelect ? ratioSelect.value : '3:2',
+          videoLength: lengthSelect ? parseInt(lengthSelect.value, 10) : 6,
+          resolutionName: resolutionSelect ? resolutionSelect.value : '480p',
+          preset: presetSelect ? presetSelect.value : 'normal',
+          reasoningEffort: DEFAULT_REASONING_EFFORT,
+          referenceUrl: imageUrl
+        })
+      : {
+          prompt,
+          image_reference: imageUrl ? { image_url: imageUrl } : undefined,
+          reasoning_effort: DEFAULT_REASONING_EFFORT,
+          aspect_ratio: ratioSelect ? ratioSelect.value : '3:2',
+          video_length: lengthSelect ? parseInt(lengthSelect.value, 10) : 6,
+          resolution_name: resolutionSelect ? resolutionSelect.value : '480p',
+          preset: presetSelect ? presetSelect.value : 'normal'
+        };
     const res = await fetch('/v1/function/video/start', {
       method: 'POST',
       headers: {
         ...buildAuthHeaders(authHeader),
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({
-        prompt,
-        image_url: imageUrl || null,
-        reasoning_effort: DEFAULT_REASONING_EFFORT,
-        aspect_ratio: ratioSelect ? ratioSelect.value : '3:2',
-        video_length: lengthSelect ? parseInt(lengthSelect.value, 10) : 6,
-        resolution_name: resolutionSelect ? resolutionSelect.value : '480p',
-        preset: presetSelect ? presetSelect.value : 'normal'
-      })
+      body: JSON.stringify(payload)
     });
     if (!res.ok) {
       const text = await res.text();
@@ -612,23 +656,10 @@
       if (imageUrlInput && imageUrlInput.value.trim()) {
         imageUrlInput.value = '';
       }
+      selectedFile = file;
       if (imageFileName) {
         imageFileName.textContent = file.name;
       }
-      const reader = new FileReader();
-      reader.onload = () => {
-        if (typeof reader.result === 'string') {
-          fileDataUrl = reader.result;
-        } else {
-          fileDataUrl = '';
-          toast(t('common.fileReadFailed'), 'error');
-        }
-      };
-      reader.onerror = () => {
-        fileDataUrl = '';
-        toast(t('common.fileReadFailed'), 'error');
-      };
-      reader.readAsDataURL(file);
     });
   }
 
@@ -646,7 +677,7 @@
 
   if (imageUrlInput) {
     imageUrlInput.addEventListener('input', () => {
-      if (imageUrlInput.value.trim() && fileDataUrl) {
+      if (imageUrlInput.value.trim() && selectedFile) {
         clearFileSelection();
       }
     });

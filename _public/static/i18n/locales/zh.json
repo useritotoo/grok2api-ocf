@@ -442,6 +442,8 @@
     "genSettings": "生成设置",
     "prompt": "提示词",
     "promptPlaceholder": "描述你想要的画面，例如：未来城市霓虹雨夜，广角摄影",
+    "referenceImage": "参考图",
+    "referenceImagePlaceholder": "https://... 或 data:image/...",
     "autoFollow": "自动跟随",
     "autoFollowDesc": "滚动到最新",
     "autoSave": "自动保存",
@@ -481,6 +483,8 @@
     "selectAll": "全选",
     "deselectAll": "取消全选",
     "download": "下载",
+    "upload": "上传",
+    "clearImage": "清除",
     "startedTasks": "已启动 {count} 个并发任务",
     "startedTasksSSE": "已启动 {count} 个并发任务 (SSE)",
     "generatingSSE": "生成中 (SSE)",
@@ -494,7 +498,9 @@
     "noImagesDownloaded": "没有成功获取任何图片",
     "generatingZip": "生成压缩包...",
     "packSuccess": "成功打包 {count} 张图片",
-    "packFailed": "打包失败，请重试"
+    "packFailed": "打包失败，请重试",
+    "referenceConflict": "参考图只能选择其一：URL/Base64 或 本地上传",
+    "uploadFailed": "上传失败"
   },
   "video": {
     "pageTitle": "Grok2API - Video 视频生成",
@@ -535,6 +541,7 @@
     "superResolutionInProgress": "超分辨率中",
     "alreadyGenerating": "已在生成中",
     "referenceConflict": "参考图只能选择其一：URL/Base64 或 本地上传",
+    "uploadFailed": "上传失败",
     "downloadFailed": "下载失败，请检查视频链接是否可访问",
     "sec6": "6 秒",
     "sec10": "10 秒",

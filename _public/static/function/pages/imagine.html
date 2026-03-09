@@ -93,6 +93,20 @@
                   </label>
                 </div>
               </div>
+              <div class="settings-block settings-block-reference">
+                <label class="field-label" for="imageUrlInput" data-i18n="imagine.referenceImage">参考图</label>
+                <div class="reference-controls">
+                  <input id="imageUrlInput" class="geist-input" placeholder="https://... 或 data:image/..." data-i18n-placeholder="imagine.referenceImagePlaceholder">
+                  <div class="reference-actions">
+                    <button id="selectImageFileBtn" class="geist-button-outline text-xs px-3" type="button" data-i18n="imagine.upload">上传</button>
+                    <button id="clearImageFileBtn" class="geist-button-outline text-xs px-3" type="button" data-i18n="imagine.clearImage">清除</button>
+                    <input id="imageFileInput" class="reference-file-input" type="file" accept="image/*">
+                  </div>
+                </div>
+                <div class="reference-meta">
+                  <span id="imageFileName" class="reference-name" data-i18n="common.noFileSelected">未选择文件</span>
+                </div>
+              </div>
               <div class="settings-block settings-block-row3">
                 <div class="settings-row">
                   <div class="settings-field">
@@ -242,6 +256,7 @@
   <script src="/static/common/js/footer.js?v=1.6.1"></script>
   <script src="/static/common/js/toast.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <script src="/static/function/js/function-payloads.js?v=1.6.1"></script>
   <script src="/static/function/js/function-transport.js?v=1.6.1"></script>
   <script src="/static/function/js/imagine.js?v=1.6.1"></script>
 </body>

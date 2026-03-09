@@ -5,7 +5,7 @@ import { requireApiAuth } from "../auth";
 import { getSettings, normalizeCfCookie } from "../settings";
 import { isValidModel, MODEL_CONFIG } from "../grok/models";
 import { extractContent, buildConversationPayload, sendConversationRequest } from "../grok/conversation";
-import { uploadImage } from "../grok/upload";
+import { uploadAttachment, uploadImage } from "../grok/upload";
 import { getDynamicHeaders } from "../grok/headers";
 import { createMediaPost, createPost } from "../grok/create";
 import { createOpenAiStreamFromGrokNdjson, parseOpenAiFromGrokNdjson } from "../grok/processor";
@@ -565,6 +565,7 @@ async function runImageCall(args: {
   const { payload, referer } = buildConversationPayload({
     requestModel: args.requestModel,
     content: args.prompt,
+    fileIds: [],
     imgIds: args.fileIds,
     imgUris: [],
     settings: args.settings,
@@ -602,6 +603,7 @@ async function runImageStreamCall(args: {
   const { payload, referer } = buildConversationPayload({
     requestModel: args.requestModel,
     content: args.prompt,
+    fileIds: [],
     imgIds: args.fileIds,
     imgUris: [],
     settings: args.settings,
@@ -1247,14 +1249,27 @@ openAiRoutes.post("/chat/completions", async (c) => {
       const cf = normalizeCfCookie(settingsBundle.grok.cf_clearance ?? "");
       const cookie = cf ? `sso-rw=${jwt};sso=${jwt};${cf}` : `sso-rw=${jwt};sso=${jwt}`;
 
-      const { content, images } = extractContent(body.messages as any);
+      const { content, attachments } = extractContent(body.messages as any);
       const isVideoModel = Boolean(cfg.is_video_model);
-      const imgInputs = images;
 
       try {
-        const uploads = await mapLimit(imgInputs, 5, (u) => uploadImage(u, cookie, settingsBundle.grok, c.env.KV_CACHE));
-        const imgIds = uploads.map((u) => u.fileId).filter(Boolean);
-        const imgUris = uploads.map((u) => u.fileUri).filter(Boolean);
+        const uploads = await mapLimit(attachments, 5, async (attachment) => ({
+          attachment,
+          uploaded: await uploadAttachment(
+            attachment.value,
+            cookie,
+            settingsBundle.grok,
+            c.env.KV_CACHE,
+            attachment.kind === "image" ? "image" : attachment.kind,
+          ),
+        }));
+        const fileIds = uploads
+          .filter((item) => item.attachment.kind !== "image")
+          .map((item) => item.uploaded.fileId)
+          .filter(Boolean);
+        const imageUploads = uploads.filter((item) => item.attachment.kind === "image");
+        const imgIds = imageUploads.map((item) => item.uploaded.fileId).filter(Boolean);
+        const imgUris = imageUploads.map((item) => item.uploaded.fileUri).filter(Boolean);
 
         let postId: string | undefined;
         if (isVideoModel) {
@@ -1274,6 +1289,7 @@ openAiRoutes.post("/chat/completions", async (c) => {
         const { payload, referer } = buildConversationPayload({
           requestModel: requestedModel,
           content,
+          fileIds,
           imgIds,
           imgUris,
           ...(postId ? { postId } : {}),
