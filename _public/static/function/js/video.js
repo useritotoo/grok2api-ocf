@@ -37,6 +37,15 @@
   let currentPreviewItem = null;
   let previewCount = 0;
   const DEFAULT_REASONING_EFFORT = 'low';
+  const referenceUploadCache = (window.VideoReferenceCache && typeof VideoReferenceCache.createReferenceUploadCache === 'function')
+    ? VideoReferenceCache.createReferenceUploadCache()
+    : {
+        reset() {},
+        peek() { return ''; },
+        async getOrUpload(file, uploadFn) {
+          return uploadFn(file);
+        }
+      };
 
   function toast(message, type) {
     if (typeof showToast === 'function') {
@@ -230,6 +239,7 @@
 
   function clearFileSelection() {
     selectedFile = null;
+    referenceUploadCache.reset();
     if (imageFileInput) {
       imageFileInput.value = '';
     }
@@ -291,8 +301,9 @@
       throw new Error('invalid_reference');
     }
     if (selectedFile) {
-      return uploadReferenceImage(authHeader, selectedFile);
+      return referenceUploadCache.getOrUpload(selectedFile, (file) => uploadReferenceImage(authHeader, file));
     }
+    referenceUploadCache.reset();
     return rawUrl || '';
   }
 
@@ -657,6 +668,9 @@
         imageUrlInput.value = '';
       }
       selectedFile = file;
+      if (!referenceUploadCache.peek(file)) {
+        referenceUploadCache.reset();
+      }
       if (imageFileName) {
         imageFileName.textContent = file.name;
       }
@@ -679,6 +693,10 @@
     imageUrlInput.addEventListener('input', () => {
       if (imageUrlInput.value.trim() && selectedFile) {
         clearFileSelection();
+        return;
+      }
+      if (imageUrlInput.value.trim()) {
+        referenceUploadCache.reset();
       }
     });
   }
