@@ -143,8 +143,12 @@ function parseSection(
 }
 
 async function ensureCurrentConfigSchema(env: Env): Promise<void> {
+  const db = (env as Partial<Env>).DB;
+  if (!db || typeof db !== "object") {
+    throw new Error("DB binding unavailable");
+  }
   const { ensureDbSchema } = await import("./schema");
-  await ensureDbSchema(env.DB);
+  await ensureDbSchema(db);
 }
 
 export async function getCurrentConfig(env: Env): Promise<CurrentConfig> {

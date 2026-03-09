@@ -72,3 +72,42 @@ test("reports binding status on /health instead of crashing when DB is missing",
   assert.equal(payload.bindings.db, false);
   assert.equal(payload.bindings.assets, true);
 });
+
+test("accepts the default admin key on /v1/admin/verify before DB bootstrap", async () => {
+  const response = await (worker.fetch as any)(
+    new Request("https://example.com/v1/admin/verify", {
+      headers: { Authorization: "Bearer admin" },
+    }),
+    {
+      ASSETS: createAssetBinding(),
+      BUILD_SHA: "dev",
+      CACHE_RESET_TZ_OFFSET_MINUTES: "480",
+      KV_CACHE_MAX_BYTES: "26214400",
+      KV_CLEANUP_BATCH: "200",
+    } as any,
+    createExecutionContext(),
+  );
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { status: "success" });
+});
+
+test("returns the default function access error instead of 500 when DB is not ready", async () => {
+  const response = await (worker.fetch as any)(
+    new Request("https://example.com/v1/function/verify"),
+    {
+      ASSETS: createAssetBinding(),
+      BUILD_SHA: "dev",
+      CACHE_RESET_TZ_OFFSET_MINUTES: "480",
+      KV_CACHE_MAX_BYTES: "26214400",
+      KV_CLEANUP_BATCH: "200",
+    } as any,
+    createExecutionContext(),
+  );
+
+  assert.equal(response.status, 401);
+  assert.deepEqual(await response.json(), {
+    error: "Function access is disabled",
+    code: "FUNCTION_DISABLED",
+  });
+});

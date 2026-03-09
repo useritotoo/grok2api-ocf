@@ -1,7 +1,7 @@
 import type { MiddlewareHandler } from "hono";
 import type { Env } from "./env";
 import { dbFirst } from "./db";
-import { getCurrentConfig, normalizeApiKeyList } from "./currentConfig";
+import { DEFAULT_CURRENT_CONFIG, getCurrentConfig, normalizeApiKeyList } from "./currentConfig";
 import { validateApiKey } from "./repo/apiKeys";
 import { verifyAdminSession } from "./repo/adminSessions";
 
@@ -34,12 +34,21 @@ function authError(message: string, code: string): Record<string, unknown> {
   };
 }
 
+async function getAuthConfig(env: Env) {
+  try {
+    return await getCurrentConfig(env);
+  } catch (error) {
+    console.error("Failed to load current config for auth, falling back to defaults:", error);
+    return DEFAULT_CURRENT_CONFIG;
+  }
+}
+
 export const requireApiAuth: MiddlewareHandler<{ Bindings: Env; Variables: { apiAuth: ApiAuthInfo } }> = async (
   c,
   next,
 ) => {
   const token = bearerToken(c.req.header("Authorization") ?? null);
-  const current = await getCurrentConfig(c.env);
+  const current = await getAuthConfig(c.env);
   const globalKeys = normalizeApiKeyList(current.app.api_key);
   const adminKey = String(current.app.app_key ?? "").trim();
 
@@ -80,7 +89,7 @@ export const requireAdminAuth: MiddlewareHandler<{ Bindings: Env }> = async (c, 
   const token = bearerToken(c.req.header("Authorization") ?? null);
   if (!token) return c.json({ error: "Missing admin credential", code: "MISSING_SESSION" }, 401);
 
-  const current = await getCurrentConfig(c.env);
+  const current = await getAuthConfig(c.env);
   const adminPassword = String(current.app.app_key ?? "").trim();
   if (adminPassword && token === adminPassword) {
     return next();
@@ -93,14 +102,14 @@ export const requireAdminAuth: MiddlewareHandler<{ Bindings: Env }> = async (c, 
 
 export async function isAdminAuthorized(env: Env, token: string | null): Promise<boolean> {
   if (!token) return false;
-  const current = await getCurrentConfig(env);
+  const current = await getAuthConfig(env);
   const adminPassword = String(current.app.app_key ?? "").trim();
   if (adminPassword && token === adminPassword) return true;
   return verifyAdminSession(env.DB, token);
 }
 
 export async function getInternalMasterToken(env: Env): Promise<string> {
-  const current = await getCurrentConfig(env);
+  const current = await getAuthConfig(env);
   const adminPassword = String(current.app.app_key ?? "").trim();
   if (adminPassword) return adminPassword;
   return normalizeApiKeyList(current.app.api_key)[0] ?? "";
@@ -110,7 +119,7 @@ export async function verifyFunctionAccess(
   env: Env,
   token: string | null,
 ): Promise<{ ok: true } | { ok: false; message: string; code: string }> {
-  const current = await getCurrentConfig(env);
+  const current = await getAuthConfig(env);
   const functionKey = String(current.app.function_key ?? "").trim();
   const functionEnabled = Boolean(current.app.function_enabled);
   const adminPassword = String(current.app.app_key ?? "").trim();
