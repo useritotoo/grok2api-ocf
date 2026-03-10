@@ -455,8 +455,8 @@
 
 .cache-card-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  gap: 14px;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 12px;
   padding: 14px;
 }
 
@@ -478,6 +478,14 @@
   background: linear-gradient(180deg, rgba(255, 255, 255, 1) 0%, rgba(249, 250, 251, 1) 100%);
   box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
   transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+}
+
+.cache-entry-card--image .cache-entry-content {
+  align-items: flex-start;
+}
+
+.cache-entry-card--image .cache-list-actions {
+  align-self: flex-start;
 }
 
 .cache-entry-card:hover {
@@ -505,16 +513,25 @@
 
 .cache-entry-preview {
   position: relative;
-  width: 76px;
-  height: 76px;
+  width: 72px;
+  height: 72px;
   border: 0;
-  border-radius: 18px;
+  border-radius: 12px;
   overflow: hidden;
   flex-shrink: 0;
   cursor: pointer;
   padding: 0;
   background: radial-gradient(circle at 30% 20%, rgba(255,255,255,0.7), rgba(15,23,42,0.88));
   box-shadow: 0 18px 40px rgba(15, 23, 42, 0.18), inset 0 0 0 1px rgba(255,255,255,0.12);
+}
+
+.cache-entry-preview--image {
+  cursor: zoom-in;
+}
+
+.cache-entry-preview:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 20px 44px rgba(15, 23, 42, 0.22), inset 0 0 0 1px rgba(255,255,255,0.18);
 }
 
 .cache-entry-preview::after {
@@ -639,7 +656,7 @@
   max-height: 88vh;
   border-radius: 24px;
   overflow: hidden;
-  background: rgba(255, 255, 255, 0.96);
+  background: rgba(255, 255, 255, 0.04);
   box-shadow: 0 32px 80px rgba(15, 23, 42, 0.35);
 }
 
@@ -658,8 +675,9 @@
 }
 
 .cache-lightbox-body {
+  position: relative;
   min-height: 220px;
-  max-height: calc(88vh - 56px);
+  max-height: 88vh;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -674,13 +692,22 @@
 }
 
 .cache-lightbox-caption {
-  padding: 14px 18px;
+  position: absolute;
+  left: 16px;
+  right: 64px;
+  bottom: 16px;
+  z-index: 2;
+  padding: 10px 14px;
   font-size: 12px;
-  color: var(--accents-5);
-  border-top: 1px solid rgba(17, 24, 39, 0.08);
+  color: #f8fafc;
+  background: linear-gradient(180deg, rgba(15, 23, 42, 0.56), rgba(15, 23, 42, 0.82));
+  backdrop-filter: blur(12px);
+  border-radius: 14px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  pointer-events: none;
+  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.24);
 }
 
 @media (max-width: 768px) {
@@ -700,5 +727,11 @@
 
   .cache-lightbox {
     padding: 14px;
+  }
+
+  .cache-lightbox-caption {
+    left: 12px;
+    right: 56px;
+    bottom: 12px;
   }
 }

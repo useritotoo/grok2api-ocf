@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import type { Env } from "../env";
-import { requireApiAuth } from "../auth";
+import { requireApiAuth, requireModelAuth } from "../auth";
 import { getSettings, normalizeCfCookie } from "../settings";
 import { isValidModel, MODEL_CONFIG } from "../grok/models";
 import { extractContent, buildConversationPayload, sendConversationRequest } from "../grok/conversation";
@@ -91,6 +91,36 @@ openAiRoutes.use(
     maxAge: 86400,
   }),
 );
+
+function buildModelPayload(id: string) {
+  const cfg = MODEL_CONFIG[id]!;
+  return {
+    id,
+    object: "model",
+    created: Math.floor(Date.now() / 1000),
+    owned_by: "x-ai",
+    display_name: cfg.display_name,
+    description: cfg.description,
+    raw_model_path: cfg.raw_model_path,
+    default_temperature: cfg.default_temperature,
+    default_max_output_tokens: cfg.default_max_output_tokens,
+    supported_max_output_tokens: cfg.supported_max_output_tokens,
+    default_top_p: cfg.default_top_p,
+  };
+}
+
+openAiRoutes.get("/models", requireModelAuth, async (c) => {
+  const data = Object.keys(MODEL_CONFIG).map((id) => buildModelPayload(id));
+  return c.json({ object: "list", data });
+});
+
+openAiRoutes.get("/models/:modelId", requireModelAuth, async (c) => {
+  const modelId = c.req.param("modelId");
+  if (!isValidModel(modelId)) {
+    return c.json(openAiError(`Model '${modelId}' not found`, "model_not_found"), 404);
+  }
+  return c.json(buildModelPayload(modelId));
+});
 
 openAiRoutes.use("/*", requireApiAuth);
 
@@ -1144,44 +1174,6 @@ function resolveImageResponseFormatByMethodOrError(
       : defaultMode;
   return parseResponseFormatOrError(raw, effectiveDefault);
 }
-
-openAiRoutes.get("/models", async (c) => {
-  const ts = Math.floor(Date.now() / 1000);
-  const data = Object.entries(MODEL_CONFIG).map(([id, cfg]) => ({
-    id,
-    object: "model",
-    created: ts,
-    owned_by: "x-ai",
-    display_name: cfg.display_name,
-    description: cfg.description,
-    raw_model_path: cfg.raw_model_path,
-    default_temperature: cfg.default_temperature,
-    default_max_output_tokens: cfg.default_max_output_tokens,
-    supported_max_output_tokens: cfg.supported_max_output_tokens,
-    default_top_p: cfg.default_top_p,
-  }));
-  return c.json({ object: "list", data });
-});
-
-openAiRoutes.get("/models/:modelId", async (c) => {
-  const modelId = c.req.param("modelId");
-  if (!isValidModel(modelId)) return c.json(openAiError(`Model '${modelId}' not found`, "model_not_found"), 404);
-  const cfg = MODEL_CONFIG[modelId]!;
-  const ts = Math.floor(Date.now() / 1000);
-  return c.json({
-    id: modelId,
-    object: "model",
-    created: ts,
-    owned_by: "x-ai",
-    display_name: cfg.display_name,
-    description: cfg.description,
-    raw_model_path: cfg.raw_model_path,
-    default_temperature: cfg.default_temperature,
-    default_max_output_tokens: cfg.default_max_output_tokens,
-    supported_max_output_tokens: cfg.supported_max_output_tokens,
-    default_top_p: cfg.default_top_p,
-  });
-});
 
 openAiRoutes.get("/images/method", async (c) => {
   const settingsBundle = await getSettings(c.env);

@@ -194,7 +194,50 @@ function buildImagineGenerationBody(payload: ImagineSessionPayload): Record<stri
   };
 }
 
-async function buildImagineEditFormData(
+function normalizeImagineReferenceMime(input: unknown): string {
+  const mime = String(input ?? "image/png").split(";")[0]?.trim() || "image/png";
+  if (!mime.startsWith("image/")) {
+    throw new Error("Imagine reference must be an image.");
+  }
+  return mime;
+}
+
+function imagineReferenceExtFromMime(mime: string): string {
+  if (mime === "image/jpeg") return "jpg";
+  return mime.split("/")[1] || "png";
+}
+
+function extractUploadedImagineReferenceName(reference: string): string | null {
+  const match =
+    reference.match(/\/images\/(upload-[^/?#]+)/i) ||
+    reference.match(/\/v1\/files\/image\/(upload-[^/?#]+)/i);
+  if (!match?.[1]) return null;
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return match[1];
+  }
+}
+
+async function readUploadedImagineReferenceFromKv(
+  c: any,
+  reference: string,
+): Promise<{ bytes: ArrayBuffer; mime: string } | null> {
+  const name = extractUploadedImagineReferenceName(reference);
+  if (!name || !c.env?.KV_CACHE) return null;
+
+  const cached = await c.env.KV_CACHE.getWithMetadata(`image/${name}`, {
+    type: "arrayBuffer",
+  }) as { value?: ArrayBuffer | null; metadata?: { contentType?: string } | null } | null;
+  if (!cached?.value) return null;
+
+  return {
+    bytes: cached.value,
+    mime: normalizeImagineReferenceMime(cached.metadata?.contentType),
+  };
+}
+
+export async function buildImagineEditFormData(
   c: any,
   payload: ImagineSessionPayload,
 ): Promise<FormData> {
@@ -203,21 +246,26 @@ async function buildImagineEditFormData(
     throw new Error("Missing image reference for imagine edit.");
   }
 
-  const referenceUrl = reference.startsWith("data:")
-    ? reference
-    : new URL(reference, c.req.url).toString();
-  const response = await fetch(referenceUrl, { redirect: "follow" });
-  if (!response.ok) {
-    throw new Error(`Failed to fetch imagine reference image (${response.status}).`);
-  }
+  const cachedReference = await readUploadedImagineReferenceFromKv(c, reference);
+  const fetchedReference = cachedReference
+    ? null
+    : await (async () => {
+        const referenceUrl = reference.startsWith("data:")
+          ? reference
+          : new URL(reference, c.req.url).toString();
+        const response = await fetch(referenceUrl, { redirect: "follow" });
+        if (!response.ok) {
+          throw new Error(`Failed to fetch imagine reference image (${response.status}).`);
+        }
+        return {
+          bytes: await response.arrayBuffer(),
+          mime: normalizeImagineReferenceMime(response.headers.get("content-type")),
+        };
+      })();
 
-  const mime = String(response.headers.get("content-type") ?? "image/png").split(";")[0]?.trim() || "image/png";
-  if (!mime.startsWith("image/")) {
-    throw new Error("Imagine reference must be an image.");
-  }
-
-  const ext = mime === "image/jpeg" ? "jpg" : mime.split("/")[1] || "png";
-  const bytes = await response.arrayBuffer();
+  const mime = cachedReference?.mime ?? fetchedReference!.mime;
+  const ext = imagineReferenceExtFromMime(mime);
+  const bytes = cachedReference?.bytes ?? fetchedReference!.bytes;
   const file = new File([bytes], `reference.${ext}`, { type: mime });
   const form = new FormData();
   form.set("model", resolveImagineGenerationTarget(payload.image_reference).model);

@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { requireApiAuth } from "../auth";
+import { requireApiAuth, requireModelAuth } from "../auth";
 import type { Env } from "../env";
 import { openAiRoutes } from "./openai";
 
@@ -162,6 +162,29 @@ async function forwardChatRequest(c: any, body: Record<string, unknown>): Promis
 }
 
 export const currentOpenAiRoutes = new Hono<{ Bindings: Env }>();
+
+currentOpenAiRoutes.get("/models", requireModelAuth, (c) => {
+  const headers = new Headers();
+  const auth = c.req.header("Authorization");
+  if (auth) headers.set("Authorization", auth);
+  return openAiRoutes.fetch(
+    new Request("https://internal.grok2api.local/models", { headers }),
+    c.env,
+    c.executionCtx,
+  );
+});
+
+currentOpenAiRoutes.get("/models/:modelId", requireModelAuth, (c) => {
+  const headers = new Headers();
+  const auth = c.req.header("Authorization");
+  if (auth) headers.set("Authorization", auth);
+  const modelId = encodeURIComponent(c.req.param("modelId"));
+  return openAiRoutes.fetch(
+    new Request(`https://internal.grok2api.local/models/${modelId}`, { headers }),
+    c.env,
+    c.executionCtx,
+  );
+});
 
 currentOpenAiRoutes.use("/*", requireApiAuth);
 

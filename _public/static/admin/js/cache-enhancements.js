@@ -203,6 +203,8 @@
     ensureEnhancedUI();
     if (!ui.cacheLightbox || !ui.cacheLightboxBody) return;
     ui.cacheLightboxBody.innerHTML = '';
+    ui.cacheLightbox.classList.toggle('is-video', type === 'video');
+    ui.cacheLightbox.classList.toggle('is-image', type !== 'video');
     if (type === 'video') {
       const video = document.createElement('video');
       video.controls = true;
@@ -219,6 +221,7 @@
     if (ui.cacheLightboxCaption) {
       ui.cacheLightboxCaption.textContent = label || '';
       ui.cacheLightboxCaption.title = label || '';
+      ui.cacheLightboxCaption.classList.toggle('hidden', !label);
     }
     ui.cacheLightbox.classList.add('active');
   }
@@ -249,6 +252,8 @@
     preview.className = `cache-entry-preview cache-entry-preview--${type}`;
     const name = String((item && item.name) || '');
     const mediaUrl = type === 'image' ? (item.preview_url || `/v1/files/image/${encodeURIComponent(name)}`) : `/v1/files/video/${encodeURIComponent(name)}`;
+    preview.title = name;
+    preview.setAttribute('aria-label', name || (type === 'image' ? 'image preview' : 'video preview'));
     preview.addEventListener('click', () => openCacheLightbox(type, mediaUrl, name));
     if (type === 'image') {
       const img = document.createElement('img');
@@ -294,6 +299,7 @@
   function createLocalCard(type, item) {
     const selected = selectedLocal[type] && selectedLocal[type].has(item.name);
     const card = buildCardShell(selected);
+    card.classList.add(`cache-entry-card--${type}`);
     const checkboxData = createCheckbox(item.name, selected, (event) => toggleLocalSelect(type, item.name, event.target), 'data-name');
     const content = document.createElement('div');
     content.className = 'cache-entry-content';
@@ -316,7 +322,9 @@
 
     const actions = document.createElement('div');
     actions.className = 'cache-list-actions';
-    actions.appendChild(createActionButton(t('common.view'), '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"></path><circle cx="12" cy="12" r="3"></circle></svg>', () => viewLocalFile(type, item.name)));
+    if (type !== 'image') {
+      actions.appendChild(createActionButton(t('common.view'), '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"></path><circle cx="12" cy="12" r="3"></circle></svg>', () => viewLocalFile(type, item.name)));
+    }
     actions.appendChild(createActionButton(t('common.delete'), '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>', () => deleteLocalFile(type, item.name)));
 
     card.appendChild(checkboxData.wrap);

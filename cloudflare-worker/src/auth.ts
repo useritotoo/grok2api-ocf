@@ -43,6 +43,35 @@ async function getAuthConfig(env: Env) {
   }
 }
 
+async function countActiveApiKeys(env: Env): Promise<number> {
+  try {
+    const row = await dbFirst<{ c: number }>(env.DB, "SELECT COUNT(1) as c FROM api_keys WHERE is_active = 1");
+    return row?.c ?? 0;
+  } catch (error) {
+    console.error("Failed to count active API keys during auth:", error);
+    return 0;
+  }
+}
+
+async function resolveApiAuthInfo(env: Env, token: string): Promise<ApiAuthInfo | null> {
+  const current = await getAuthConfig(env);
+  const globalKeys = normalizeApiKeyList(current.app.api_key);
+  const adminKey = String(current.app.app_key ?? "").trim();
+
+  if (adminKey && token === adminKey) {
+    return { key: token, name: "Admin Key", is_admin: true };
+  }
+
+  if (globalKeys.includes(token)) {
+    return { key: token, name: "Default API Key", is_admin: true };
+  }
+
+  const keyInfo = await validateApiKey(env.DB, token);
+  if (!keyInfo) return null;
+
+  return { key: keyInfo.key, name: keyInfo.name, is_admin: false };
+}
+
 export const requireApiAuth: MiddlewareHandler<{ Bindings: Env; Variables: { apiAuth: ApiAuthInfo } }> = async (
   c,
   next,
@@ -50,15 +79,10 @@ export const requireApiAuth: MiddlewareHandler<{ Bindings: Env; Variables: { api
   const token = bearerToken(c.req.header("Authorization") ?? null);
   const current = await getAuthConfig(c.env);
   const globalKeys = normalizeApiKeyList(current.app.api_key);
-  const adminKey = String(current.app.app_key ?? "").trim();
 
   if (!token) {
     if (!globalKeys.length) {
-      const row = await dbFirst<{ c: number }>(
-        c.env.DB,
-        "SELECT COUNT(1) as c FROM api_keys WHERE is_active = 1",
-      );
-      if ((row?.c ?? 0) === 0) {
+      if ((await countActiveApiKeys(c.env)) === 0) {
         c.set("apiAuth", { key: null, name: "Anonymous", is_admin: false });
         return next();
       }
@@ -66,19 +90,47 @@ export const requireApiAuth: MiddlewareHandler<{ Bindings: Env; Variables: { api
     return c.json(authError("Missing bearer token", "missing_token"), 401);
   }
 
-  if (adminKey && token === adminKey) {
-    c.set("apiAuth", { key: token, name: "Admin Key", is_admin: true });
+  const authInfo = await resolveApiAuthInfo(c.env, token);
+  if (authInfo) {
+    c.set("apiAuth", authInfo);
     return next();
   }
 
-  if (globalKeys.includes(token)) {
-    c.set("apiAuth", { key: token, name: "Default API Key", is_admin: true });
+  return c.json(authError(`Invalid token, length ${token.length}`, "invalid_token"), 401);
+};
+
+export const requireModelAuth: MiddlewareHandler<{ Bindings: Env; Variables: { apiAuth: ApiAuthInfo } }> = async (
+  c,
+  next,
+) => {
+  const token = bearerToken(c.req.header("Authorization") ?? null);
+
+  if (!token) {
+    const current = await getAuthConfig(c.env);
+    const globalKeys = normalizeApiKeyList(current.app.api_key);
+    if (!globalKeys.length && (await countActiveApiKeys(c.env)) === 0) {
+      c.set("apiAuth", { key: null, name: "Anonymous", is_admin: false });
+      return next();
+    }
+
+    const functionAccess = await verifyFunctionAccess(c.env, null);
+    if (functionAccess.ok) {
+      c.set("apiAuth", { key: null, name: "Function Access", is_admin: false });
+      return next();
+    }
+
+    return c.json(authError("Missing bearer token", "missing_token"), 401);
+  }
+
+  const authInfo = await resolveApiAuthInfo(c.env, token);
+  if (authInfo) {
+    c.set("apiAuth", authInfo);
     return next();
   }
 
-  const keyInfo = await validateApiKey(c.env.DB, token);
-  if (keyInfo) {
-    c.set("apiAuth", { key: keyInfo.key, name: keyInfo.name, is_admin: false });
+  const functionAccess = await verifyFunctionAccess(c.env, token);
+  if (functionAccess.ok) {
+    c.set("apiAuth", { key: null, name: "Function Key", is_admin: false });
     return next();
   }
 
