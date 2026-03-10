@@ -114,6 +114,80 @@ function normalizeGeneratedAssetUrls(input: unknown): string[] {
   return out;
 }
 
+function buildMarkdownImage(title: string, url: string): string {
+  const normalizedTitle = title.replace(/\n/g, " ").trim() || "image";
+  return `![${normalizedTitle}](${url})`;
+}
+
+function extractCardImageInfo(input: unknown): { id: string; title: string; original: string } | null {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return null;
+
+  const record = input as Record<string, unknown>;
+  const image = record.image;
+  if (!image || typeof image !== "object" || Array.isArray(image)) return null;
+
+  const original = String((image as Record<string, unknown>).original ?? "").trim();
+  if (!original) return null;
+
+  return {
+    id: String(record.id ?? "").trim(),
+    title: String((image as Record<string, unknown>).title ?? ""),
+    original,
+  };
+}
+
+function extractCardAttachmentMarkdown(cardAttachment: unknown): string | null {
+  if (!cardAttachment || typeof cardAttachment !== "object" || Array.isArray(cardAttachment)) return null;
+
+  const jsonData = (cardAttachment as Record<string, unknown>).jsonData;
+  let parsed: unknown = null;
+  if (typeof jsonData === "string" && jsonData.trim()) {
+    try {
+      parsed = JSON.parse(jsonData);
+    } catch {
+      parsed = null;
+    }
+  } else if (jsonData && typeof jsonData === "object") {
+    parsed = jsonData;
+  }
+
+  const info = extractCardImageInfo(parsed);
+  if (!info) return null;
+  return buildMarkdownImage(info.title, info.original);
+}
+
+function replaceRenderCardsWithMarkdown(content: string, cardAttachmentsJson: unknown): string {
+  if (!content || !Array.isArray(cardAttachmentsJson) || !cardAttachmentsJson.length) return content;
+
+  const cardMap = new Map<string, { title: string; original: string }>();
+  for (const raw of cardAttachmentsJson) {
+    let parsed: unknown = raw;
+    if (typeof raw === "string" && raw.trim()) {
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        parsed = null;
+      }
+    }
+
+    const info = extractCardImageInfo(parsed);
+    if (!info?.id) continue;
+    cardMap.set(info.id, { title: info.title, original: info.original });
+  }
+
+  if (!cardMap.size) return content;
+
+  return content.replace(
+    /<grok:render[^>]*card_id="([^"]+)"[^>]*>.*?<\/grok:render>/g,
+    (match, cardId: string, offset: number) => {
+      const item = cardMap.get(cardId);
+      if (!item) return "";
+      const prefix = offset > 0 && content[offset - 1] !== "\n" && content[offset - 1] !== "\r" ? "\n" : "";
+      return `${prefix}${buildMarkdownImage(item.title, item.original)}`;
+    },
+  );
+}
+
 export function createOpenAiStreamFromGrokNdjson(
   grokResp: Response,
   opts: {
@@ -306,6 +380,7 @@ export function createOpenAiStreamFromGrokNdjson(
 
             if (grok.imageAttachmentInfo) isImage = true;
             const rawToken = grok.token;
+            const cardMarkdown = extractCardAttachmentMarkdown(grok.cardAttachment);
 
             if (isImage) {
               const modelResp = grok.modelResponse;
@@ -329,6 +404,11 @@ export function createOpenAiStreamFromGrokNdjson(
               } else if (typeof rawToken === "string" && rawToken) {
                 controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, rawToken)));
               }
+              continue;
+            }
+
+            if (cardMarkdown) {
+              controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, `${cardMarkdown}\n`)));
               continue;
             }
 
@@ -457,6 +537,7 @@ export async function parseOpenAiFromGrokNdjson(
 
     if (typeof modelResp.model === "string" && modelResp.model) model = modelResp.model;
     if (typeof modelResp.message === "string") content = modelResp.message;
+    content = replaceRenderCardsWithMarkdown(content, modelResp.cardAttachmentsJson);
 
     const rawUrls = modelResp.generatedImageUrls;
     const urls = normalizeGeneratedAssetUrls(rawUrls);
