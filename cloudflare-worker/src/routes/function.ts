@@ -18,6 +18,7 @@ import {
   getFunctionSession,
   upsertFunctionSession,
 } from "../repo/functionSessions";
+import { listCacheRowsByType } from "../repo/cache";
 import { applyCooldown, recordTokenFailure, selectBestToken } from "../repo/tokens";
 import { getSettings, normalizeCfCookie } from "../settings";
 import { buildInternalRequestUrl } from "./functionHelpers";
@@ -37,6 +38,12 @@ interface VideoSessionPayload {
   preset: "fun" | "normal" | "spicy" | "custom";
   image_reference: string | null;
   reasoning_effort: string | null;
+  is_video_extension: boolean;
+  extend_post_id: string | null;
+  video_extension_start_time: number | null;
+  original_post_id: string | null;
+  file_attachment_id: string | null;
+  stitch_with_extend: boolean;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -123,6 +130,18 @@ function extractImageReference(input: unknown): string | null {
   return null;
 }
 
+function extractOptionalString(input: unknown): string | null {
+  const value = String(input ?? "").trim();
+  return value || null;
+}
+
+function normalizeVideoExtensionStartTime(input: unknown): number | null {
+  if (input === null || input === undefined || input === "") return null;
+  const value = Number(input);
+  if (!Number.isFinite(value) || value < 0) return null;
+  return value;
+}
+
 function buildVideoChatBody(payload: VideoSessionPayload): Record<string, unknown> {
   const content = payload.image_reference
     ? [
@@ -140,7 +159,14 @@ function buildVideoChatBody(payload: VideoSessionPayload): Record<string, unknow
       aspect_ratio: payload.aspect_ratio,
       video_length: payload.video_length,
       resolution: payload.resolution_name === "720p" ? "HD" : "SD",
+      resolution_name: payload.resolution_name,
       preset: payload.preset,
+      is_video_extension: payload.is_video_extension,
+      extend_post_id: payload.extend_post_id,
+      video_extension_start_time: payload.video_extension_start_time,
+      original_post_id: payload.original_post_id,
+      file_attachment_id: payload.file_attachment_id,
+      stitch_with_extend: payload.stitch_with_extend,
     },
   };
 }
@@ -722,7 +748,25 @@ functionRoutes.get("/v1/function/imagine/ws", async (c) => {
 functionRoutes.post("/v1/function/video/start", async (c) => {
   const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
   const prompt = String(body.prompt ?? "").trim();
-  if (!prompt) {
+  const imageReference =
+    extractImageReference(body.image_reference) ?? (String(body.image_url ?? "").trim() || null);
+  const isVideoExtension = parseBoolean(body.is_video_extension) === true;
+  const extendPostId = extractOptionalString(body.extend_post_id);
+  const videoExtensionStartTime = normalizeVideoExtensionStartTime(body.video_extension_start_time);
+  if (isVideoExtension) {
+    if (!extendPostId) {
+      return c.json({ error: "extend_post_id is required", code: "invalid_extend_post_id" }, 400);
+    }
+    if (videoExtensionStartTime === null) {
+      return c.json(
+        {
+          error: "video_extension_start_time must be a non-negative number",
+          code: "invalid_video_extension_start_time",
+        },
+        400,
+      );
+    }
+  } else if (!prompt && !imageReference) {
     return c.json({ error: "Prompt cannot be empty", code: "invalid_prompt" }, 400);
   }
 
@@ -734,8 +778,14 @@ functionRoutes.post("/v1/function/video/start", async (c) => {
     video_length: normalizeVideoLength(body.video_length),
     resolution_name: normalizeResolution(body.resolution_name),
     preset: normalizePreset(body.preset),
-    image_reference: extractImageReference(body.image_reference) ?? (String(body.image_url ?? "").trim() || null),
+    image_reference: imageReference,
     reasoning_effort: normalizeReasoningEffort(body.reasoning_effort),
+    is_video_extension: isVideoExtension,
+    extend_post_id: isVideoExtension ? extendPostId : null,
+    video_extension_start_time: isVideoExtension ? videoExtensionStartTime : null,
+    original_post_id: isVideoExtension ? extractOptionalString(body.original_post_id) : null,
+    file_attachment_id: isVideoExtension ? extractOptionalString(body.file_attachment_id) : null,
+    stitch_with_extend: isVideoExtension ? (parseBoolean(body.stitch_with_extend) ?? true) : true,
   };
 
   await upsertFunctionSession<VideoSessionPayload>(c.env.DB, {
@@ -747,6 +797,29 @@ functionRoutes.post("/v1/function/video/start", async (c) => {
   });
 
   return c.json({ task_id: taskId, aspect_ratio: payload.aspect_ratio });
+});
+
+functionRoutes.get("/v1/function/video/cache/list", async (c) => {
+  const page = Math.max(1, Number(c.req.query("page") ?? 1));
+  const pageSize = Math.max(1, Math.min(200, Number(c.req.query("page_size") ?? 100)));
+  const offset = (page - 1) * pageSize;
+  const { total, items } = await listCacheRowsByType(c.env.DB, "video", pageSize, offset);
+  return c.json({
+    total,
+    page,
+    page_size: pageSize,
+    items: items.map((item) => {
+      const name = item.key.startsWith("video/") ? item.key.slice("video/".length) : item.key;
+      const viewUrl = `/images/${encodeURIComponent(name)}`;
+      return {
+        name,
+        size_bytes: item.size,
+        mtime_ms: item.last_access_at || item.created_at,
+        preview_url: viewUrl,
+        view_url: viewUrl,
+      };
+    }),
+  });
 });
 
 functionRoutes.get("/v1/function/video/sse", async (c) => {

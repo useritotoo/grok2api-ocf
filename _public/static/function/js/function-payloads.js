@@ -39,6 +39,17 @@
     if (imageReference) {
       payload.image_reference = imageReference;
     }
+    const extension = args && args.extension;
+    if (extension && extension.extendPostId) {
+      payload.is_video_extension = true;
+      payload.extend_post_id = String(extension.extendPostId).trim();
+      payload.video_extension_start_time = Number(extension.startTime || 0);
+      payload.original_post_id =
+        extension.originalPostId == null ? null : String(extension.originalPostId).trim() || null;
+      payload.file_attachment_id =
+        extension.fileAttachmentId == null ? null : String(extension.fileAttachmentId).trim() || null;
+      payload.stitch_with_extend = extension.stitchWithExtend !== false;
+    }
     return payload;
   }
 

@@ -28,7 +28,14 @@ export interface OpenAIChatRequestBody {
     aspect_ratio?: string;
     video_length?: number;
     resolution?: string;
+    resolution_name?: string;
     preset?: string;
+    is_video_extension?: boolean;
+    extend_post_id?: string;
+    video_extension_start_time?: number;
+    original_post_id?: string;
+    file_attachment_id?: string;
+    stitch_with_extend?: boolean;
   };
 }
 
@@ -125,7 +132,14 @@ export function buildConversationPayload(args: {
     aspect_ratio?: string;
     video_length?: number;
     resolution?: string;
+    resolution_name?: string;
     preset?: string;
+    is_video_extension?: boolean;
+    extend_post_id?: string;
+    video_extension_start_time?: number;
+    original_post_id?: string;
+    file_attachment_id?: string;
+    stitch_with_extend?: boolean;
   };
   settings: GrokSettings;
 }): { payload: Record<string, unknown>; referer?: string; isVideoModel: boolean } {
@@ -140,14 +154,51 @@ export function buildConversationPayload(args: {
     const videoLengthRaw = Number(args.videoConfig?.video_length ?? 6);
     const videoLength = Number.isFinite(videoLengthRaw) ? Math.max(1, Math.floor(videoLengthRaw)) : 6;
     const resolution = (args.videoConfig?.resolution ?? "SD") === "HD" ? "HD" : "SD";
+    const resolutionName = (args.videoConfig?.resolution_name ?? (resolution === "HD" ? "720p" : "480p")).trim();
     const preset = (args.videoConfig?.preset ?? "normal").trim();
+    const isVideoExtension = Boolean(args.videoConfig?.is_video_extension);
+    const extendPostId = String(args.videoConfig?.extend_post_id ?? "").trim() || undefined;
+    const originalPostId = String(args.videoConfig?.original_post_id ?? "").trim() || undefined;
+    const fileAttachmentId = String(args.videoConfig?.file_attachment_id ?? "").trim() || undefined;
+    const stitchWithExtend = args.videoConfig?.stitch_with_extend !== false;
+    const videoExtensionStartTimeRaw = Number(args.videoConfig?.video_extension_start_time ?? NaN);
+    const videoExtensionStartTime = Number.isFinite(videoExtensionStartTimeRaw)
+      ? Math.max(0, videoExtensionStartTimeRaw)
+      : undefined;
 
     let modeFlag = "--mode=custom";
     if (preset === "fun") modeFlag = "--mode=extremely-crazy";
     else if (preset === "normal") modeFlag = "--mode=normal";
     else if (preset === "spicy") modeFlag = "--mode=extremely-spicy-or-crazy";
 
-    const prompt = `${String(content || "").trim()} ${modeFlag}`.trim();
+    const promptText = String(content || "").trim();
+    const resolvedMode = modeFlag.replace("--mode=", "");
+    const prompt = `${promptText} ${modeFlag}`.trim();
+    const fileAttachments = [...fileIds, ...imgIds];
+    if (isVideoExtension && fileAttachmentId) {
+      fileAttachments.unshift(fileAttachmentId);
+    }
+
+    const videoGenModelConfig: Record<string, unknown> = {
+      parentPostId: postId,
+      aspectRatio,
+      videoLength,
+      videoResolution: resolution,
+    };
+    if (isVideoExtension) {
+      videoGenModelConfig.isVideoExtension = true;
+      videoGenModelConfig.videoExtensionStartTime = videoExtensionStartTime ?? 0;
+      videoGenModelConfig.extendPostId = extendPostId ?? postId;
+      videoGenModelConfig.stitchWithExtendPostId = stitchWithExtend;
+      videoGenModelConfig.originalPostId = originalPostId ?? extendPostId ?? postId;
+      videoGenModelConfig.originalRefType = "ORIGINAL_REF_TYPE_VIDEO_EXTENSION";
+      videoGenModelConfig.mode = resolvedMode;
+      videoGenModelConfig.resolutionName = resolutionName;
+      videoGenModelConfig.isVideoEdit = false;
+      if (promptText) {
+        videoGenModelConfig.originalPrompt = promptText;
+      }
+    }
 
     return {
       isVideoModel: true,
@@ -156,19 +207,14 @@ export function buildConversationPayload(args: {
         temporary: true,
         modelName: "grok-3",
         message: prompt,
-        fileAttachments: [...fileIds, ...imgIds],
+        fileAttachments,
         toolOverrides: { videoGen: true },
         enableSideBySide: true,
         responseMetadata: {
           experiments: [],
           modelConfigOverride: {
             modelMap: {
-              videoGenModelConfig: {
-                parentPostId: postId,
-                aspectRatio,
-                videoLength,
-                videoResolution: resolution,
-              },
+              videoGenModelConfig,
             },
           },
         },

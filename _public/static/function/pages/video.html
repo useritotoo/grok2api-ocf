@@ -4,7 +4,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title data-i18n="video.pageTitle">Grok2API - Video 视频生成</title>
+  <title data-i18n="video.pageTitle">Grok2API - Video</title>
   <link rel="icon" href="/favicon.ico">
   <script src="https://cdn.tailwindcss.com"></script>
   <link href="/static/common/css/fonts.css?v=1.6.1" rel="stylesheet">
@@ -21,132 +21,222 @@
     <div class="space-y-6">
       <div class="video-header-row">
         <div>
-          <h2 class="text-2xl font-semibold tracking-tight" data-i18n="video.title">Video 视频生成</h2>
-          <p class="text-[var(--accents-4)] mt-1 text-sm" data-i18n="video.subtitle">生成短视频，支持参考图与多种预设风格。</p>
+          <h2 class="text-2xl font-semibold tracking-tight" data-i18n="video.title">Video</h2>
+          <p class="text-[var(--accents-4)] mt-1 text-sm" data-i18n="video.subtitle">
+            Generate short videos with prompts and reference images.
+          </p>
         </div>
         <div class="video-actions">
-          <button id="startBtn" class="geist-button gap-2">
+          <button id="startBtn" class="geist-button gap-2" type="button">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
               stroke-linecap="round" stroke-linejoin="round">
               <polygon points="5 3 19 12 5 21 5 3" />
             </svg>
-            <span data-i18n="video.startGenerate">开始生成</span>
+            <span data-i18n="video.startGenerate">Start</span>
           </button>
-          <button id="stopBtn" class="geist-button-outline gap-2 hidden">
+          <button id="stopBtn" class="geist-button-outline gap-2 hidden" type="button">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
               stroke-linecap="round" stroke-linejoin="round">
               <rect x="5" y="5" width="14" height="14" />
             </svg>
-            <span data-i18n="common.stop">停止</span>
+            <span data-i18n="common.stop">Stop</span>
           </button>
         </div>
       </div>
 
       <div class="h-px bg-[var(--border)]"></div>
 
-      <div class="video-top-grid">
-        <div class="video-card">
-          <div class="card-title" data-i18n="video.genSettings">生成设置</div>
-          <div class="settings-grid">
-            <div class="settings-block prompt-block">
-              <label class="field-label" for="promptInput" data-i18n="video.prompt">提示词</label>
-              <textarea id="promptInput" class="geist-input video-textarea" placeholder="例如：街头霓虹雨夜，慢镜头，胶片质感" data-i18n-placeholder="video.promptPlaceholder"></textarea>
-            </div>
-            <div class="settings-block ref-block">
-              <label class="field-label" for="imageUrlInput" data-i18n="video.referenceImage">参考图</label>
-              <div class="ref-controls">
-                <input id="imageUrlInput" class="geist-input" placeholder="https://... 或 data:image/..." data-i18n-placeholder="video.referenceImagePlaceholder">
+      <div class="video-main-grid">
+        <div class="video-main-left">
+          <div class="video-card">
+            <div class="card-title" data-i18n="video.genSettings">Generation Settings</div>
+            <div class="settings-grid">
+              <div class="settings-block prompt-block">
+                <label class="field-label" for="promptInput" data-i18n="video.prompt">Prompt</label>
+                <textarea id="promptInput" class="geist-input video-textarea"
+                  placeholder="Example: neon rainy night street, slow motion, cinematic grain"
+                  data-i18n-placeholder="video.promptPlaceholder"></textarea>
               </div>
-              <div class="ref-meta">
-                <span id="imageFileName" class="ref-name" data-i18n="common.noFileSelected">未选择文件</span>
+              <div class="settings-block ref-block">
+                <label class="field-label" for="imageUrlInput" data-i18n="video.referenceImage">Reference Image</label>
+                <div class="ref-controls">
+                  <input id="imageUrlInput" class="geist-input" placeholder="https://... or data:image/..."
+                    data-i18n-placeholder="video.referenceImagePlaceholder">
+                </div>
+                <div class="ref-meta">
+                  <span id="imageFileName" class="ref-name" data-i18n="common.noFileSelected">No file selected</span>
+                </div>
+              </div>
+              <div class="settings-block ratio-block">
+                <label class="field-label" for="ratioSelect" data-i18n="video.aspectRatio">Aspect Ratio</label>
+                <select id="ratioSelect" class="geist-input">
+                  <option value="3:2" selected data-i18n="video.ratio3_2">3:2</option>
+                  <option value="2:3" data-i18n="video.ratio2_3">2:3</option>
+                  <option value="16:9" data-i18n="video.ratio16_9">16:9</option>
+                  <option value="9:16" data-i18n="video.ratio9_16">9:16</option>
+                  <option value="1:1" data-i18n="video.ratio1_1">1:1</option>
+                </select>
+              </div>
+              <div class="settings-block length-block">
+                <label class="field-label" for="lengthSelect" data-i18n="video.duration">Duration</label>
+                <input id="lengthSelect" class="geist-input" type="number" min="6" max="30" step="1" value="6">
+              </div>
+              <div class="settings-block resolution-block">
+                <label class="field-label" for="resolutionSelect" data-i18n="video.resolution">Resolution</label>
+                <select id="resolutionSelect" class="geist-input">
+                  <option value="480p" selected>480p</option>
+                  <option value="720p">720p</option>
+                </select>
+              </div>
+              <div class="settings-block preset-block">
+                <label class="field-label" for="presetSelect" data-i18n="video.stylePreset">Preset</label>
+                <select id="presetSelect" class="geist-input">
+                  <option value="normal" selected>Normal</option>
+                  <option value="fun">Fun</option>
+                  <option value="spicy">Spicy</option>
+                  <option value="custom">Custom</option>
+                </select>
+              </div>
+              <div class="settings-block upload-block">
+                <label class="field-label">&nbsp;</label>
+                <button id="selectImageFileBtn" class="geist-button-outline text-xs px-3" type="button"
+                  data-i18n="video.upload">Upload</button>
+                <input id="imageFileInput" class="ref-file-input" type="file" accept="image/*">
+              </div>
+              <div class="settings-block clear-block">
+                <label class="field-label">&nbsp;</label>
+                <button id="clearImageFileBtn" class="geist-button-outline text-xs px-3" type="button"
+                  data-i18n="video.clearImage">Clear</button>
               </div>
             </div>
-            <div class="settings-block ratio-block">
-              <label class="field-label" for="ratioSelect" data-i18n="video.aspectRatio">画面比例</label>
-              <select id="ratioSelect" class="geist-input">
-                <option value="3:2" selected data-i18n="video.ratio3_2">3:2 横构图</option>
-                <option value="2:3" data-i18n="video.ratio2_3">2:3 竖构图</option>
-                <option value="16:9" data-i18n="video.ratio16_9">16:9 宽屏</option>
-                <option value="9:16" data-i18n="video.ratio9_16">9:16 竖屏</option>
-                <option value="1:1" data-i18n="video.ratio1_1">1:1 方形</option>
-              </select>
+          </div>
+
+          <div id="editPanel" class="video-card edit-panel">
+            <div class="video-preview-header">
+              <div class="card-title">Video Extend Workspace</div>
+              <div class="preview-actions">
+                <button id="pickCachedVideoBtn" class="geist-button-outline text-xs px-3" type="button">Cached Videos</button>
+                <button id="uploadWorkVideoBtn" class="geist-button-outline text-xs px-3" type="button">Upload Video</button>
+                <input id="workVideoFileInput" class="ref-file-input" type="file" accept="video/*">
+                <button id="clearBtn" class="geist-button-outline text-xs px-3" type="button">Clear</button>
+              </div>
             </div>
-            <div class="settings-block length-block">
-              <label class="field-label" for="lengthSelect" data-i18n="video.duration">视频时长</label>
-              <input id="lengthSelect" class="geist-input" type="number" min="6" max="30" step="1" value="6" />
-            </div>
-            <div class="settings-block resolution-block">
-              <label class="field-label" for="resolutionSelect" data-i18n="video.resolution">分辨率</label>
-              <select id="resolutionSelect" class="geist-input">
-                <option value="480p" selected>480p</option>
-                <option value="720p">720p</option>
-              </select>
-            </div>
-            <div class="settings-block preset-block">
-              <label class="field-label" for="presetSelect" data-i18n="video.stylePreset">风格预设</label>
-              <select id="presetSelect" class="geist-input">
-                <option value="normal" selected>Normal</option>
-                <option value="fun">Fun</option>
-                <option value="spicy">Spicy</option>
-                <option value="custom">Custom</option>
-              </select>
-            </div>
-            <div class="settings-block upload-block">
-              <label class="field-label">&nbsp;</label>
-              <button id="selectImageFileBtn" class="geist-button-outline text-xs px-3" type="button" data-i18n="video.upload">上传</button>
-              <input id="imageFileInput" class="ref-file-input" type="file" accept="image/*">
-            </div>
-            <div class="settings-block clear-block">
-              <label class="field-label">&nbsp;</label>
-              <button id="clearImageFileBtn" class="geist-button-outline text-xs px-3" type="button" data-i18n="video.clearImage">清除</button>
+            <div id="editHint" class="video-empty">Select a generated or cached video to start extending.</div>
+            <div id="editBody">
+              <div class="meta-grid edit-meta-grid">
+                <div class="meta-item">
+                  <div class="meta-label">Current video</div>
+                  <div id="editCurrentVideo" class="meta-value">-</div>
+                </div>
+                <div class="meta-item">
+                  <div class="meta-label">History</div>
+                  <div id="historyCount" class="meta-value">0</div>
+                </div>
+              </div>
+              <div class="edit-preview-wrap">
+                <video id="editVideo" controls preload="metadata" playsinline webkit-playsinline></video>
+              </div>
+              <div class="edit-slider-wrap">
+                <input id="editTimeline" class="timeline-delete-zone" data-delete-side="right" type="range" min="0"
+                  max="100000" step="1" value="0">
+                <div class="progress-meta">
+                  <span id="editTimeText">00:00.000</span>
+                  <span id="editDurationText">Duration -</span>
+                </div>
+              </div>
+              <div class="meta-grid edit-meta-grid">
+                <div class="meta-item">
+                  <div class="meta-label">frame_index</div>
+                  <div id="editFrameIndex" class="meta-value">-</div>
+                </div>
+                <div class="meta-item">
+                  <div class="meta-label">timestamp_ms</div>
+                  <div id="editTimestampMs" class="meta-value">-</div>
+                </div>
+                <div class="meta-item">
+                  <div class="meta-label">extend_post_id</div>
+                  <div id="editExtendPostId" class="meta-value">-</div>
+                </div>
+              </div>
+              <div class="settings-block edit-prompt-block">
+                <label class="field-label" for="editPromptInput">Extend Prompt</label>
+                <textarea id="editPromptInput" class="geist-input video-textarea"
+                  placeholder="Describe what should happen next. Leave empty to continue naturally."></textarea>
+              </div>
+              <div class="preview-actions splice-action-row">
+                <button id="spliceBtn" class="geist-button gap-2" type="button">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                    stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M5 12h14" />
+                    <path d="M12 5v14" />
+                  </svg>
+                  <span>Extend Video</span>
+                </button>
+              </div>
             </div>
           </div>
         </div>
 
-        <div class="video-card">
-          <div class="status-header">
-            <div class="card-title" data-i18n="video.runStatus">运行状态</div>
-            <span id="statusText" class="status-text" data-i18n="common.notConnected">未连接</span>
-          </div>
+        <aside class="video-main-right">
+          <div class="video-card">
+            <div class="status-header">
+              <div class="card-title" data-i18n="video.runStatus">Status</div>
+              <span id="statusText" class="status-text" data-i18n="common.notConnected">Disconnected</span>
+            </div>
             <div class="progress-wrap">
               <div id="progressBar" class="progress-bar">
                 <div id="progressFill" class="progress-fill"></div>
               </div>
               <div class="progress-meta">
                 <span id="progressText">0%</span>
-                <span id="durationValue" data-i18n="video.elapsedTimeNone">耗时 -</span>
+                <span id="durationValue" data-i18n="video.elapsedTimeNone">Elapsed -</span>
+              </div>
+            </div>
+            <div class="meta-grid">
+              <div class="meta-item">
+                <div class="meta-label" data-i18n="video.metaRatio">Ratio</div>
+                <div id="aspectValue" class="meta-value">-</div>
+              </div>
+              <div class="meta-item">
+                <div class="meta-label" data-i18n="video.metaDuration">Duration</div>
+                <div id="lengthValue" class="meta-value">-</div>
+              </div>
+              <div class="meta-item">
+                <div class="meta-label" data-i18n="video.metaResolution">Resolution</div>
+                <div id="resolutionValue" class="meta-value">-</div>
+              </div>
+              <div class="meta-item">
+                <div class="meta-label" data-i18n="video.metaPreset">Preset</div>
+                <div id="presetValue" class="meta-value">-</div>
+              </div>
             </div>
           </div>
-          <div class="meta-grid">
-            <div class="meta-item">
-              <div class="meta-label" data-i18n="video.metaRatio">比例</div>
-              <div id="aspectValue" class="meta-value">-</div>
+
+          <aside class="video-card history-panel">
+            <div class="panel-head">
+              <div class="card-title">History</div>
             </div>
-            <div class="meta-item">
-              <div class="meta-label" data-i18n="video.metaDuration">时长</div>
-              <div id="lengthValue" class="meta-value">-</div>
+            <div id="videoEmpty" class="video-empty">
+              Generated and extended videos appear here. Click any item to load it into the workspace.
             </div>
-            <div class="meta-item">
-              <div class="meta-label" data-i18n="video.metaResolution">分辨率</div>
-              <div id="resolutionValue" class="meta-value">-</div>
-            </div>
-            <div class="meta-item">
-              <div class="meta-label" data-i18n="video.metaPreset">预设</div>
-              <div id="presetValue" class="meta-value">-</div>
-            </div>
-          </div>
-        </div>
+            <div id="videoStage" class="video-stage hidden"></div>
+          </aside>
+        </aside>
       </div>
 
-      <div class="video-card video-preview-card">
-        <div class="video-preview-header">
-          <div class="card-title" data-i18n="video.videoPreview">视频预览</div>
-          <div class="preview-actions">
-            <button id="clearBtn" class="geist-button-outline text-xs px-3" data-i18n="video.clearPreview">清空</button>
+      <div id="cacheVideoModal" class="modal-overlay hidden">
+        <div class="modal-content modal-lg">
+          <div class="modal-header">
+            <h3 class="modal-title">Select Cached Video</h3>
+            <button id="closeCacheVideoModalBtn" class="modal-close" type="button" aria-label="Close">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="18" y1="6" x2="6" y2="18"></line>
+                <line x1="6" y1="6" x2="18" y2="18"></line>
+              </svg>
+            </button>
           </div>
+          <div id="cacheVideoList" class="cache-video-list"></div>
         </div>
-        <div id="videoEmpty" class="video-empty" data-i18n="video.waitingGenerate">等待生成视频</div>
-        <div id="videoStage" class="video-stage hidden"></div>
       </div>
     </div>
   </main>

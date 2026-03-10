@@ -1197,7 +1197,15 @@ openAiRoutes.post("/chat/completions", async (c) => {
         aspect_ratio?: string;
         video_length?: number;
         resolution?: string;
+        resolution_name?: string;
         preset?: string;
+        is_video_extension?: boolean;
+        extend_post_id?: string;
+        video_extension_start_time?: number;
+        original_post_id?: string;
+        file_attachment_id?: string;
+        stitch_with_extend?: boolean;
+        parent_post_id?: string;
       };
     };
 
@@ -1265,7 +1273,12 @@ openAiRoutes.post("/chat/completions", async (c) => {
 
         let postId: string | undefined;
         if (isVideoModel) {
-          if (imgUris.length) {
+          const requestedParentPostId =
+            String(body.video_config?.extend_post_id ?? "").trim() ||
+            String(body.video_config?.parent_post_id ?? "").trim();
+          if (requestedParentPostId) {
+            postId = requestedParentPostId;
+          } else if (imgUris.length) {
             const post = await createPost(imgUris[0]!, cookie, settingsBundle.grok);
             postId = post.postId || undefined;
           } else {

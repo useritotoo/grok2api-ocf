@@ -49,3 +49,36 @@ test("buildVideoStartPayload includes image_reference when a reference url is pr
     },
   });
 });
+
+test("buildVideoStartPayload includes video extension fields when provided", () => {
+  const payload = buildVideoStartPayload({
+    prompt: "",
+    aspectRatio: "16:9",
+    videoLength: 10,
+    resolutionName: "720p",
+    preset: "spicy",
+    reasoningEffort: "low",
+    extension: {
+      extendPostId: "abcd1234abcd1234abcd1234abcd1234",
+      startTime: 4.25,
+      originalPostId: "orig1234orig1234orig1234orig1234",
+      fileAttachmentId: "file1234file1234file1234file1234",
+      stitchWithExtend: true,
+    },
+  });
+
+  assert.deepEqual(payload, {
+    prompt: "",
+    aspect_ratio: "16:9",
+    video_length: 10,
+    resolution_name: "720p",
+    preset: "spicy",
+    reasoning_effort: "low",
+    is_video_extension: true,
+    extend_post_id: "abcd1234abcd1234abcd1234abcd1234",
+    video_extension_start_time: 4.25,
+    original_post_id: "orig1234orig1234orig1234orig1234",
+    file_attachment_id: "file1234file1234file1234file1234",
+    stitch_with_extend: true,
+  });
+});
