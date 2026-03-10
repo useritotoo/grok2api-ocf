@@ -197,11 +197,11 @@
     const label = spliceBtn.querySelector('span');
     if (label) {
       if (state === 'running') {
-        label.textContent = 'Stop Extend';
+        label.textContent = '中止延长';
       } else if (state === 'stopping') {
-        label.textContent = 'Stopping...';
+        label.textContent = '停止中...';
       } else {
-        label.textContent = 'Extend Video';
+        label.textContent = '开始延长';
       }
     }
     spliceBtn.disabled = state === 'stopping';
@@ -301,7 +301,7 @@
       selectedVideoItemId = '';
     }
     if (durationValue) {
-      durationValue.textContent = tSafe('video.elapsedTimeNone', 'Elapsed -');
+      durationValue.textContent = tSafe('video.elapsedTimeNone', '耗时 -');
     }
     updateHistoryCount();
     refreshVideoSelectionUi();
@@ -310,10 +310,10 @@
   function nextHistoryTitle(kind) {
     if (kind === 'splice') {
       extendedCount += 1;
-      return `Extended Video ${extendedCount}`;
+      return `延长视频 ${extendedCount}`;
     }
     generatedCount += 1;
-    return tSafe('video.videoTitle', `Generated Video ${generatedCount}`, { n: generatedCount });
+    return tSafe('video.videoTitle', `生成视频 ${generatedCount}`, { n: generatedCount });
   }
 
   function initPreviewSlot(kind) {
@@ -339,12 +339,12 @@
     openBtn.className = 'geist-button-outline text-xs px-3 video-open hidden';
     openBtn.target = '_blank';
     openBtn.rel = 'noopener';
-    openBtn.textContent = t('video.open');
+    openBtn.textContent = tSafe('video.open', '打开');
 
     const downloadBtn = document.createElement('button');
     downloadBtn.className = 'geist-button-outline text-xs px-3 video-download';
     downloadBtn.type = 'button';
-    downloadBtn.textContent = t('imagine.download');
+    downloadBtn.textContent = tSafe('imagine.download', '下载');
     downloadBtn.disabled = true;
 
     actions.appendChild(openBtn);
@@ -354,7 +354,7 @@
 
     const body = document.createElement('div');
     body.className = 'video-item-body';
-    body.innerHTML = '<div class="video-item-placeholder">' + t('video.generatingPlaceholder') + '</div>';
+    body.innerHTML = '<div class="video-item-placeholder">' + tSafe('video.generatingPlaceholder', '等待视频输出...') + '</div>';
 
     const link = document.createElement('div');
     link.className = 'video-item-link';
@@ -434,7 +434,7 @@
     elapsedTimer = setInterval(() => {
       if (!startAt) return;
       const seconds = Math.max(0, Math.round((Date.now() - startAt) / 1000));
-      durationValue.textContent = tSafe('video.elapsedTime', `Elapsed ${seconds}s`, { sec: seconds });
+      durationValue.textContent = tSafe('video.elapsedTime', `耗时 ${seconds}s`, { sec: seconds });
     }, 1000);
   }
 
@@ -452,7 +452,7 @@
       imageFileInput.value = '';
     }
     if (imageFileName) {
-      imageFileName.textContent = tSafe('common.noFileSelected', 'No file selected');
+      imageFileName.textContent = tSafe('common.noFileSelected', '未选择文件');
     }
   }
 
@@ -489,7 +489,7 @@
       editTimeText.textContent = '00:00.000';
     }
     if (editDurationText) {
-      editDurationText.textContent = 'Duration -';
+      editDurationText.textContent = '总时长 -';
     }
     if (editHint) {
       editHint.classList.remove('hidden');
@@ -629,7 +629,7 @@
   async function loadCachedVideos() {
     const authHeader = await ensureFunctionKey();
     if (authHeader === null) {
-      toast(tSafe('common.configurePublicKey', 'Please configure Function Key first.'), 'error');
+      toast(tSafe('common.configurePublicKey', '请先配置 Function Key。'), 'error');
       window.location.href = '/login';
       return [];
     }
@@ -656,7 +656,7 @@
   function renderCachedVideoList(items) {
     if (!cacheVideoList) return;
     if (!items.length) {
-      cacheVideoList.innerHTML = '<div class="video-empty">No cached videos found.</div>';
+      cacheVideoList.innerHTML = '<div class="video-empty">暂无缓存视频。</div>';
       return;
     }
     const html = items.map((item, idx) => {
@@ -672,7 +672,7 @@
           <div class="cache-video-name">${escapeHtml(name || `video_${idx + 1}.mp4`)}</div>
           <div class="cache-video-sub">${escapeHtml(size)} · ${escapeHtml(mtime)}</div>
         </div>
-        <button class="geist-button-outline text-xs px-3 cache-video-use" type="button">Use</button>
+        <button class="geist-button-outline text-xs px-3 cache-video-use" type="button">使用</button>
       </div>`;
     }).join('');
     cacheVideoList.innerHTML = html;
@@ -691,7 +691,7 @@
       label: basename(name) || basename(safeUrl)
     });
     closeCacheVideoModal();
-    toast('Cached video loaded into workspace.', 'success');
+    toast('已将缓存视频载入工作区。', 'success');
   }
 
   async function stopVideoTask(taskId, authHeader) {
@@ -793,7 +793,7 @@
     if (editTimeText) {
       let label = formatMs(lockedTimestampMs);
       if (lockedTimestampMs >= MAX_EXTENSION_START_SECONDS * 1000 && duration > MAX_EXTENSION_START_SECONDS) {
-        label += ' (20s max)';
+        label += '（最长 20 秒）';
       }
       editTimeText.textContent = label;
     }
@@ -812,7 +812,7 @@
     if (editTimeText) {
       let label = formatMs(lockedTimestampMs);
       if (lockedTimestampMs >= MAX_EXTENSION_START_SECONDS * 1000 && Number(editVideo.duration || 0) > MAX_EXTENSION_START_SECONDS) {
-        label += ' (20s max)';
+        label += '（最长 20 秒）';
       }
       editTimeText.textContent = label;
     }
@@ -824,10 +824,10 @@
       return;
     }
     if (text.includes('超分辨率') || text.includes('super resolution')) {
-      setStatus('connecting', tSafe('video.superResolutionInProgress', 'Super resolution'));
+      setStatus('connecting', tSafe('video.superResolutionInProgress', '超分处理中'));
       setIndeterminate(true);
       if (progressText) {
-        progressText.textContent = tSafe('video.superResolutionInProgress', 'Super resolution');
+        progressText.textContent = tSafe('video.superResolutionInProgress', '超分处理中');
       }
       return;
     }
@@ -909,13 +909,13 @@
 
   async function startConnection() {
     if (isRunning) {
-      toast(tSafe('video.alreadyGenerating', 'A task is already running.'), 'warning');
+      toast(tSafe('video.alreadyGenerating', '已有任务正在运行。'), 'warning');
       return;
     }
 
     const authHeader = await ensureFunctionKey();
     if (authHeader === null) {
-      toast(tSafe('common.configurePublicKey', 'Please configure Function Key first.'), 'error');
+      toast(tSafe('common.configurePublicKey', '请先配置 Function Key。'), 'error');
       window.location.href = '/login';
       return;
     }
@@ -928,7 +928,7 @@
       return;
     }
     if (!prompt && !imageUrl) {
-      toast(tSafe('common.enterPrompt', 'Enter a prompt or provide a reference image.'), 'error');
+      toast(tSafe('common.enterPrompt', '请输入提示词，或提供参考图。'), 'error');
       return;
     }
 
@@ -938,7 +938,7 @@
     updateMeta();
     resetOutput(true);
     initPreviewSlot(currentRunKind);
-    setStatus('connecting', tSafe('common.connecting', 'Connecting'));
+    setStatus('connecting', tSafe('common.connecting', '连接中'));
 
     const payload = (window.FunctionPayloads && typeof FunctionPayloads.buildVideoStartPayload === 'function')
       ? FunctionPayloads.buildVideoStartPayload({
@@ -964,7 +964,7 @@
     try {
       taskId = await createVideoTask(authHeader, payload);
     } catch (e) {
-      setStatus('error', tSafe('common.createTaskFailed', 'Create task failed'));
+      setStatus('error', tSafe('common.createTaskFailed', '创建任务失败'));
       startBtn.disabled = false;
       isRunning = false;
       return;
@@ -972,7 +972,7 @@
 
     currentTaskId = taskId;
     startAt = Date.now();
-    setStatus('connected', tSafe('common.generating', 'Generating'));
+    setStatus('connected', tSafe('common.generating', '生成中'));
     setButtons(true);
     setIndeterminate(true);
     syncTimelineAvailability();
@@ -985,7 +985,7 @@
     currentSource = es;
 
     es.onopen = () => {
-      setStatus('connected', tSafe('common.generating', 'Generating'));
+      setStatus('connected', tSafe('common.generating', '生成中'));
     };
 
     es.onmessage = (event) => {
@@ -1002,7 +1002,7 @@
       }
       if (payload && payload.error) {
         toast(payload.error, 'error');
-        setStatus('error', tSafe('common.generationFailed', 'Generation failed'));
+        setStatus('error', tSafe('common.generationFailed', '生成失败'));
         finishRun(true);
         return;
       }
@@ -1018,7 +1018,7 @@
 
     es.onerror = () => {
       if (!isRunning) return;
-      setStatus('error', tSafe('common.connectionError', 'Connection error'));
+      setStatus('error', tSafe('common.connectionError', '连接异常'));
       finishRun(true);
     };
   }
@@ -1030,21 +1030,21 @@
       return;
     }
     if (isRunning) {
-      toast(tSafe('video.alreadyGenerating', 'A task is already running.'), 'warning');
+      toast(tSafe('video.alreadyGenerating', '已有任务正在运行。'), 'warning');
       return;
     }
     if (!selectedVideoUrl) {
-      toast('Select a video before extending.', 'error');
+      toast('请先选择一个视频，再执行延长。', 'error');
       return;
     }
     if (!currentExtendPostId) {
-      toast('Current video has no extend_post_id. Select a generated or cached video.', 'error');
+      toast('当前视频没有可用的延长 ID，请从历史或缓存中重新选择视频。', 'error');
       return;
     }
 
     const authHeader = await ensureFunctionKey();
     if (authHeader === null) {
-      toast(tSafe('common.configurePublicKey', 'Please configure Function Key first.'), 'error');
+      toast(tSafe('common.configurePublicKey', '请先配置 Function Key。'), 'error');
       window.location.href = '/login';
       return;
     }
@@ -1088,13 +1088,13 @@
     resetOutput(true);
     initPreviewSlot(currentRunKind);
     setSpliceButtonState('running');
-    setStatus('connecting', 'Preparing extend task');
+    setStatus('connecting', '准备延长任务');
 
     let taskId = '';
     try {
       taskId = await createVideoTask(authHeader, payload);
     } catch (e) {
-      setStatus('error', tSafe('common.createTaskFailed', 'Create task failed'));
+      setStatus('error', tSafe('common.createTaskFailed', '创建任务失败'));
       startBtn.disabled = false;
       isRunning = false;
       setSpliceButtonState('idle');
@@ -1103,7 +1103,7 @@
 
     currentTaskId = taskId;
     startAt = Date.now();
-    setStatus('connected', 'Extending');
+    setStatus('connected', '延长中');
     setButtons(true);
     setIndeterminate(true);
     syncTimelineAvailability();
@@ -1116,7 +1116,7 @@
     currentSource = es;
 
     es.onopen = () => {
-      setStatus('connected', 'Extending');
+      setStatus('connected', '延长中');
     };
 
     es.onmessage = (event) => {
@@ -1133,7 +1133,7 @@
       }
       if (payloadObject && payloadObject.error) {
         toast(payloadObject.error, 'error');
-        setStatus('error', 'Extend failed');
+        setStatus('error', '延长失败');
         finishRun(true);
         return;
       }
@@ -1149,7 +1149,7 @@
 
     es.onerror = () => {
       if (!isRunning) return;
-      setStatus('error', 'Connection error');
+      setStatus('error', '连接异常');
       finishRun(true);
     };
   }
@@ -1166,7 +1166,7 @@
     setButtons(false);
     setSpliceButtonState('idle');
     syncTimelineAvailability();
-    setStatus('', tSafe('common.notConnected', 'Disconnected'));
+    setStatus('', tSafe('common.notConnected', '未连接'));
   }
 
   function finishRun(hasError) {
@@ -1178,15 +1178,15 @@
     syncTimelineAvailability();
     stopElapsedTimer();
     if (!hasError) {
-      setStatus('connected', currentRunKind === 'splice' ? 'Extend complete' : tSafe('common.done', 'Done'));
+      setStatus('connected', currentRunKind === 'splice' ? '延长完成' : tSafe('common.done', '已完成'));
       setIndeterminate(false);
       updateProgress(100);
     } else if (currentRunKind === 'splice') {
-      setStatus('error', 'Extend failed');
+      setStatus('error', '延长失败');
     }
     if (durationValue && startAt) {
       const seconds = Math.max(0, Math.round((Date.now() - startAt) / 1000));
-      durationValue.textContent = tSafe('video.elapsedTime', `Elapsed ${seconds}s`, { sec: seconds });
+      durationValue.textContent = tSafe('video.elapsedTime', `耗时 ${seconds}s`, { sec: seconds });
     }
   }
 
@@ -1201,7 +1201,7 @@
   if (clearBtn) {
     clearBtn.addEventListener('click', () => {
       if (isRunning) {
-        toast('Stop the current task before clearing.', 'warning');
+        toast('请先停止当前任务，再清空工作区。', 'warning');
         return;
       }
       resetOutput();
@@ -1217,13 +1217,13 @@
     pickCachedVideoBtn.addEventListener('click', async () => {
       if (!cacheVideoList) return;
       openCacheVideoModal();
-      cacheVideoList.innerHTML = '<div class="video-empty">Loading cached videos...</div>';
+      cacheVideoList.innerHTML = '<div class="video-empty">正在读取缓存视频...</div>';
       try {
         const items = await loadCachedVideos();
         renderCachedVideoList(items);
       } catch (e) {
-        cacheVideoList.innerHTML = '<div class="video-empty">Failed to load cached videos.</div>';
-        toast('Failed to load cached videos.', 'error');
+        cacheVideoList.innerHTML = '<div class="video-empty">读取缓存视频失败，请稍后重试。</div>';
+        toast('读取缓存视频失败。', 'error');
       }
     });
   }
@@ -1269,7 +1269,7 @@
         rootAttachmentId: '',
         label: file.name
       });
-      toast('Local video loaded into workspace.', 'success');
+      toast('已将本地视频载入工作区。', 'success');
     });
   }
 
@@ -1307,7 +1307,7 @@
           anchor.remove();
           URL.revokeObjectURL(blobUrl);
         } catch (e) {
-          toast(tSafe('video.downloadFailed', 'Download failed.'), 'error');
+          toast(tSafe('video.downloadFailed', '下载失败。'), 'error');
         }
         return;
       }
@@ -1387,7 +1387,7 @@
     editVideo.addEventListener('loadedmetadata', () => {
       const duration = Number(editVideo.duration || 0);
       if (editDurationText) {
-        editDurationText.textContent = duration > 0 ? `Duration ${formatMs(duration * 1000)}` : 'Duration -';
+        editDurationText.textContent = duration > 0 ? `总时长 ${formatMs(duration * 1000)}` : '总时长 -';
       }
       lockedFrameIndex = 0;
       lockedTimestampMs = 0;
