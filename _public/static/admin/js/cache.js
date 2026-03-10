@@ -466,9 +466,50 @@ function ensureUI() {
 
 let confirmResolver = null;
 
+function ensureConfirmDialogButtons() {
+  ensureUI();
+  const dialog = ui.confirmDialog;
+  if (!dialog) return;
+
+  let actions = dialog.querySelector('.confirm-dialog-actions');
+  if (!actions) {
+    actions = document.createElement('div');
+    actions.className = 'confirm-dialog-actions';
+    const body = dialog.querySelector('.confirm-dialog-body') || dialog;
+    body.appendChild(actions);
+  }
+
+  if (!ui.confirmCancel) {
+    const cancelBtn = document.createElement('button');
+    cancelBtn.id = 'confirm-cancel';
+    cancelBtn.type = 'button';
+    cancelBtn.className = 'geist-button-outline text-xs px-3';
+    cancelBtn.setAttribute('data-i18n', 'common.cancel');
+    cancelBtn.textContent = typeof t === 'function' ? t('common.cancel') : 'Cancel';
+    actions.appendChild(cancelBtn);
+    ui.confirmCancel = cancelBtn;
+  } else if (ui.confirmCancel.parentNode !== actions) {
+    actions.appendChild(ui.confirmCancel);
+  }
+
+  if (!ui.confirmOk) {
+    const okBtn = document.createElement('button');
+    okBtn.id = 'confirm-ok';
+    okBtn.type = 'button';
+    okBtn.className = 'geist-button-danger text-xs px-3';
+    okBtn.setAttribute('data-i18n', 'common.ok');
+    okBtn.textContent = typeof t === 'function' ? t('common.ok') : 'OK';
+    actions.appendChild(okBtn);
+    ui.confirmOk = okBtn;
+  } else if (ui.confirmOk.parentNode !== actions) {
+    actions.appendChild(ui.confirmOk);
+  }
+}
+
 function setupConfirmDialog() {
   const dialog = ui.confirmDialog;
   if (!dialog) return;
+  ensureConfirmDialogButtons();
 
   dialog.addEventListener('close', () => {
     if (!confirmResolver) return;
@@ -526,6 +567,7 @@ function setupBatchControls() {
 
 function confirmAction(message, options = {}) {
   ensureUI();
+  ensureConfirmDialogButtons();
   const dialog = ui.confirmDialog;
   if (!dialog || typeof dialog.showModal !== 'function') {
     return Promise.resolve(window.confirm(message));
