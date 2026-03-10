@@ -107,6 +107,57 @@ test("createOpenAiStreamFromGrokNdjson closes think blocks and emits final model
   assert.equal(contents[1], "\n</think>\nfinal answer");
 });
 
+test("createOpenAiStreamFromGrokNdjson replaces grok:render cards when cardAttachmentsJson wraps jsonData", async () => {
+  const payload = [
+    JSON.stringify({ result: { response: { token: "analysis", isThinking: true } } }),
+    JSON.stringify({
+      result: {
+        response: {
+          modelResponse: {
+            message:
+              '<grok:render card_id="wuJL3" card_type="generated_image_card" type="render_generated_image"><argument name="prompt">orange cat</argument></grok:render>',
+            cardAttachmentsJson: [
+              JSON.stringify({
+                id: "wuJL3",
+                jsonData: JSON.stringify({
+                  id: "wuJL3",
+                  image: {
+                    original: "https://example.com/cat.png",
+                    title: "orange cat",
+                  },
+                }),
+              }),
+            ],
+            generatedImageUrls: [],
+          },
+        },
+      },
+    }),
+  ].join("\n") + "\n";
+
+  const output = await readStream(
+    createOpenAiStreamFromGrokNdjson(new Response(payload), {
+      cookie: "",
+      settings: {
+        filtered_tags: "xaiartifact,xai:tool_usage_card,grok:render",
+        show_thinking: true,
+        stream_first_response_timeout: 1,
+        stream_chunk_timeout: 1,
+        stream_total_timeout: 1,
+        video_poster_preview: false,
+      } as any,
+      global: { base_url: "" } as any,
+      origin: "https://worker.example.com",
+      requestedModel: "grok-4",
+    }),
+  );
+
+  const contents = extractDeltaContents(output);
+  assert.equal(contents[0], "<think>\nanalysis");
+  assert.equal(contents[1], "\n</think>\n![orange cat](https://example.com/cat.png)");
+  assert.doesNotMatch(contents[1], /<grok:render/);
+});
+
 test("parseOpenAiFromGrokNdjson replaces grok:render image cards with markdown", async () => {
   const payload = [
     JSON.stringify({
@@ -117,10 +168,13 @@ test("parseOpenAiFromGrokNdjson replaces grok:render image cards with markdown",
             cardAttachmentsJson: [
               JSON.stringify({
                 id: "card-1",
-                image: {
-                  original: "https://example.com/nonstream.png",
-                  title: "nonstream",
-                },
+                jsonData: JSON.stringify({
+                  id: "card-1",
+                  image: {
+                    original: "https://example.com/nonstream.png",
+                    title: "nonstream",
+                  },
+                }),
               }),
             ],
             generatedImageUrls: [],

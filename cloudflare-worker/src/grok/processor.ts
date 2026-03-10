@@ -119,10 +119,37 @@ function buildMarkdownImage(title: string, url: string): string {
   return `![${normalizedTitle}](${url})`;
 }
 
-function extractCardImageInfo(input: unknown): { id: string; title: string; original: string } | null {
-  if (!input || typeof input !== "object" || Array.isArray(input)) return null;
+function parseJsonLike(input: unknown): unknown {
+  if (typeof input !== "string") return input;
+  const raw = input.trim();
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
 
-  const record = input as Record<string, unknown>;
+function normalizeCardPayload(input: unknown): Record<string, unknown> | null {
+  const parsed = parseJsonLike(input);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+
+  const record = parsed as Record<string, unknown>;
+  const nested = parseJsonLike(record.jsonData);
+  if (!nested || typeof nested !== "object" || Array.isArray(nested)) return record;
+
+  const nestedRecord = nested as Record<string, unknown>;
+  const mergedId = String(nestedRecord.id ?? record.id ?? "").trim();
+  return {
+    ...record,
+    ...nestedRecord,
+    ...(mergedId ? { id: mergedId } : {}),
+  };
+}
+
+function extractCardImageInfo(input: unknown): { id: string; title: string; original: string } | null {
+  const record = normalizeCardPayload(input);
+  if (!record) return null;
   const image = record.image;
   if (!image || typeof image !== "object" || Array.isArray(image)) return null;
 
@@ -137,21 +164,7 @@ function extractCardImageInfo(input: unknown): { id: string; title: string; orig
 }
 
 function extractCardAttachmentMarkdown(cardAttachment: unknown): string | null {
-  if (!cardAttachment || typeof cardAttachment !== "object" || Array.isArray(cardAttachment)) return null;
-
-  const jsonData = (cardAttachment as Record<string, unknown>).jsonData;
-  let parsed: unknown = null;
-  if (typeof jsonData === "string" && jsonData.trim()) {
-    try {
-      parsed = JSON.parse(jsonData);
-    } catch {
-      parsed = null;
-    }
-  } else if (jsonData && typeof jsonData === "object") {
-    parsed = jsonData;
-  }
-
-  const info = extractCardImageInfo(parsed);
+  const info = extractCardImageInfo(cardAttachment);
   if (!info) return null;
   return buildMarkdownImage(info.title, info.original);
 }
@@ -161,16 +174,7 @@ function replaceRenderCardsWithMarkdown(content: string, cardAttachmentsJson: un
 
   const cardMap = new Map<string, { title: string; original: string }>();
   for (const raw of cardAttachmentsJson) {
-    let parsed: unknown = raw;
-    if (typeof raw === "string" && raw.trim()) {
-      try {
-        parsed = JSON.parse(raw);
-      } catch {
-        parsed = null;
-      }
-    }
-
-    const info = extractCardImageInfo(parsed);
+    const info = extractCardImageInfo(raw);
     if (!info?.id) continue;
     cardMap.set(info.id, { title: info.title, original: info.original });
   }
