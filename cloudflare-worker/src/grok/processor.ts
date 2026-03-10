@@ -240,6 +240,7 @@ export function createOpenAiStreamFromGrokNdjson(
       let isImage = false;
       let isThinking = false;
       let thinkingFinished = false;
+      let streamedAnswerText = "";
       let videoProgressStarted = false;
       let lastVideoProgress = -1;
 
@@ -326,6 +327,10 @@ export function createOpenAiStreamFromGrokNdjson(
 
             const userRespModel = grok.userResponse?.model;
             if (typeof userRespModel === "string" && userRespModel.trim()) currentModel = userRespModel.trim();
+            const modelResp = grok.modelResponse;
+            if (typeof modelResp?.model === "string" && modelResp.model.trim()) {
+              currentModel = modelResp.model.trim();
+            }
 
             // Video generation stream
             const videoResp = grok.streamingVideoGenerationResponse;
@@ -383,7 +388,6 @@ export function createOpenAiStreamFromGrokNdjson(
             const cardMarkdown = extractCardAttachmentMarkdown(grok.cardAttachment);
 
             if (isImage) {
-              const modelResp = grok.modelResponse;
               if (modelResp) {
                 const urls = normalizeGeneratedAssetUrls(modelResp.generatedImageUrls);
                 if (urls.length) {
@@ -409,6 +413,32 @@ export function createOpenAiStreamFromGrokNdjson(
 
             if (cardMarkdown) {
               controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, `${cardMarkdown}\n`)));
+              continue;
+            }
+
+            if (modelResp && !isImage && typeof modelResp.message === "string" && modelResp.message) {
+              let finalMessage = replaceRenderCardsWithMarkdown(modelResp.message, modelResp.cardAttachmentsJson);
+              let messageSuffix = finalMessage;
+              if (streamedAnswerText) {
+                messageSuffix = finalMessage.startsWith(streamedAnswerText)
+                  ? finalMessage.slice(streamedAnswerText.length)
+                  : "";
+              }
+
+              let emitted = "";
+              if (isThinking && showThinking) {
+                emitted += "\n</think>\n";
+                thinkingFinished = true;
+                isThinking = false;
+              }
+              if (messageSuffix) {
+                emitted += messageSuffix;
+                streamedAnswerText = finalMessage;
+              }
+
+              if (emitted) {
+                controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, emitted)));
+              }
               continue;
             }
 
@@ -458,6 +488,7 @@ export function createOpenAiStreamFromGrokNdjson(
             }
 
             if (!shouldSkip) controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, content)));
+            if (!shouldSkip && !currentIsThinking) streamedAnswerText += content;
             isThinking = currentIsThinking;
           }
         }
