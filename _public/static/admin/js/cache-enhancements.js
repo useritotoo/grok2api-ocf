@@ -7,6 +7,20 @@
   let lazyMediaObserver = null;
   let lightboxBound = false;
 
+  function normalizeLocalPageSize(value) {
+    const size = Math.max(1, parseInt(value, 10) || DEFAULT_LOCAL_PAGE_SIZE);
+    return LOCAL_PAGE_SIZES.includes(size) ? size : DEFAULT_LOCAL_PAGE_SIZE;
+  }
+
+  function syncLocalPagingState() {
+    ['image', 'video'].forEach((type) => {
+      const state = getLocalState(type);
+      if (!state) return;
+      state.page = Math.max(1, parseInt(state.page, 10) || 1);
+      state.pageSize = normalizeLocalPageSize(state.pageSize);
+    });
+  }
+
   function cacheStateLib() {
     return typeof CachePageState !== 'undefined' ? CachePageState : {
       truncateMiddle(value, maxLength) {
@@ -78,11 +92,13 @@
   cacheUI = function cacheUIEnhanced() {
     originalCacheUI();
     ensureEnhancedUI();
+    syncLocalPagingState();
   };
 
   function setPageSizeOptions(select, values, selectedValue) {
     if (!select) return;
-    const currentValue = Number(selectedValue) || values[0];
+    const requestedValue = Number(selectedValue) || values[0];
+    const currentValue = values.includes(requestedValue) ? requestedValue : values[0];
     select.innerHTML = '';
     values.forEach((size) => {
       const option = document.createElement('option');
@@ -140,7 +156,10 @@
       entries.forEach((entry) => {
         if (!entry.isIntersecting) return;
         const src = entry.target.getAttribute('data-src');
-        if (src) entry.target.setAttribute('src', src);
+        if (src) {
+          entry.target.setAttribute('src', src);
+          if (entry.target.tagName === 'VIDEO' && typeof entry.target.load === 'function') entry.target.load();
+        }
         entry.target.removeAttribute('data-src');
         lazyMediaObserver.unobserve(entry.target);
       });
@@ -148,17 +167,28 @@
     return lazyMediaObserver;
   }
 
-  function mountLazyImage(img, src) {
-    if (!img || !src) return;
-    img.loading = 'lazy';
-    img.decoding = 'async';
+  function mountLazyMedia(element, src) {
+    if (!element || !src) return;
+    if (element.tagName === 'IMG') {
+      element.loading = 'lazy';
+      element.decoding = 'async';
+    }
     const observer = ensureLazyObserver();
     if (!observer) {
-      img.src = src;
+      element.src = src;
+      if (element.tagName === 'VIDEO' && typeof element.load === 'function') element.load();
       return;
     }
-    img.setAttribute('data-src', src);
-    observer.observe(img);
+    element.setAttribute('data-src', src);
+    observer.observe(element);
+  }
+
+  function getLocalMediaUrl(type, itemOrName) {
+    const item = itemOrName && typeof itemOrName === 'object' ? itemOrName : null;
+    const name = String(item ? (item.name || '') : (itemOrName || ''));
+    const safeName = encodeURIComponent(name);
+    if (type === 'image') return item && item.preview_url ? item.preview_url : `/v1/files/image/${safeName}`;
+    return `/images/${safeName}`;
   }
 
   function statusClassName(status) {
@@ -251,24 +281,24 @@
     preview.type = 'button';
     preview.className = `cache-entry-preview cache-entry-preview--${type}`;
     const name = String((item && item.name) || '');
-    const mediaUrl = type === 'image' ? (item.preview_url || `/v1/files/image/${encodeURIComponent(name)}`) : `/v1/files/video/${encodeURIComponent(name)}`;
+    const mediaUrl = getLocalMediaUrl(type, item);
     preview.title = name;
     preview.setAttribute('aria-label', name || (type === 'image' ? 'image preview' : 'video preview'));
     preview.addEventListener('click', () => openCacheLightbox(type, mediaUrl, name));
     if (type === 'image') {
       const img = document.createElement('img');
       img.alt = name;
-      mountLazyImage(img, mediaUrl);
+      mountLazyMedia(img, mediaUrl);
       preview.appendChild(img);
     } else {
-      const icon = document.createElement('div');
-      icon.className = 'cache-preview-icon';
-      icon.innerHTML = '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>';
-      const label = document.createElement('span');
-      label.className = 'cache-preview-label';
-      label.textContent = 'Video';
-      preview.appendChild(icon);
-      preview.appendChild(label);
+      const video = document.createElement('video');
+      video.preload = 'metadata';
+      video.muted = true;
+      video.playsInline = true;
+      video.setAttribute('aria-hidden', 'true');
+      video.tabIndex = -1;
+      mountLazyMedia(video, mediaUrl);
+      preview.appendChild(video);
     }
     return preview;
   }
@@ -322,9 +352,6 @@
 
     const actions = document.createElement('div');
     actions.className = 'cache-list-actions';
-    if (type !== 'image') {
-      actions.appendChild(createActionButton(t('common.view'), '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"></path><circle cx="12" cy="12" r="3"></circle></svg>', () => viewLocalFile(type, item.name)));
-    }
     actions.appendChild(createActionButton(t('common.delete'), '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>', () => deleteLocalFile(type, item.name)));
 
     card.appendChild(checkboxData.wrap);
@@ -641,7 +668,9 @@
     if (!body) return;
     const state = getLocalState(type);
     if (!state) return;
-    const pageSize = Math.max(1, parseInt(options.pageSize ?? state.pageSize ?? DEFAULT_LOCAL_PAGE_SIZE, 10) || DEFAULT_LOCAL_PAGE_SIZE);
+    const refs = getLocalPaginationRefs(type);
+    const requestedPageSize = options.pageSize ?? refs.size?.value ?? state.pageSize ?? DEFAULT_LOCAL_PAGE_SIZE;
+    const pageSize = normalizeLocalPageSize(requestedPageSize);
     const targetPage = Math.max(1, parseInt(options.page ?? state.page ?? 1, 10) || 1);
     state.loading = true;
     state.pageSize = pageSize;
@@ -701,8 +730,147 @@
   };
 
   viewLocalFile = function viewLocalFileEnhanced(type, name) {
-    const safeName = encodeURIComponent(name);
-    openCacheLightbox(type, type === 'image' ? `/v1/files/image/${safeName}` : `/v1/files/video/${safeName}`, name);
+    openCacheLightbox(type, getLocalMediaUrl(type, name), name);
+  };
+
+  function applyLocalStats(stats) {
+    if (!stats) return;
+    if (stats.local_image) {
+      setText(ui.imgCount, stats.local_image.count);
+      setText(ui.imgSize, `${stats.local_image.size_mb} MB`);
+    }
+    if (stats.local_video) {
+      setText(ui.videoCount, stats.local_video.count);
+      setText(ui.videoSize, `${stats.local_video.size_mb} MB`);
+    }
+  }
+
+  async function refreshLocalStats(options = {}) {
+    try {
+      const res = await fetch('/v1/admin/cache/local', { headers: buildAuthHeaders(apiKey) });
+      if (!res.ok) throw new Error('refresh local stats failed');
+      const data = await res.json();
+      applyLocalStats(data);
+      return data;
+    } catch (error) {
+      if (!options.silent) showToast(t('cache.loadStatsFailed'), 'error');
+      return null;
+    }
+  }
+
+  async function refreshLocalListAfterDelete(type) {
+    const state = getLocalState(type);
+    if (!state) return;
+    const pageSize = normalizeLocalPageSize(state.pageSize);
+    const totalPages = Math.max(1, Math.ceil(Math.max(0, Number(state.total) || 0) / pageSize));
+    const targetPage = Math.min(Math.max(1, Number(state.page) || 1), totalPages);
+    state.page = targetPage;
+    await loadLocalCacheList(type, { page: targetPage, pageSize });
+  }
+
+  clearCache = async function clearCacheEnhanced(type) {
+    const ok = await confirmAction(t(type === 'image' ? 'cache.confirmClearImage' : 'cache.confirmClearVideo'), { okText: t('cache.clear') });
+    if (!ok) return;
+
+    try {
+      const res = await fetch('/v1/admin/cache/clear', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...buildAuthHeaders(apiKey)
+        },
+        body: JSON.stringify({ type })
+      });
+
+      const data = await res.json();
+      if (data.status !== 'success') {
+        showToast(t('cache.clearFailed'), 'error');
+        return;
+      }
+
+      const state = getLocalState(type);
+      if (state) {
+        state.items = [];
+        state.total = 0;
+        state.page = 1;
+        state.loaded = true;
+        state.loading = false;
+      }
+      if (selectedLocal[type]) selectedLocal[type].clear();
+      if (state && state.visible) {
+        renderLocalCacheList(type, []);
+      } else {
+        syncLocalSelectAllState(type);
+        updateLocalPaginationUI(type);
+        updateSelectedCount();
+      }
+      await refreshLocalStats({ silent: true });
+      showToast(t('cache.clearSuccess', { size: data.result.size_mb }), 'success');
+    } catch (error) {
+      showToast(t('common.requestFailed'), 'error');
+    }
+  };
+
+  deleteLocalFile = async function deleteLocalFileEnhanced(type, name) {
+    const ok = await confirmAction(t('cache.confirmDeleteFile'), { okText: t('common.delete') });
+    if (!ok) return;
+    const okDelete = await requestDeleteLocalFile(type, name);
+    if (!okDelete) {
+      showToast(t('common.requestFailed'), 'error');
+      return;
+    }
+
+    const state = getLocalState(type);
+    selectedLocal[type]?.delete(name);
+    if (state) state.total = Math.max(0, (Number(state.total) || 0) - 1);
+    await refreshLocalListAfterDelete(type);
+    await refreshLocalStats({ silent: true });
+    showToast(t('common.deleteSuccess'), 'success');
+  };
+
+  deleteSelectedLocal = async function deleteSelectedLocalEnhanced(type) {
+    const selected = selectedLocal[type];
+    const names = selected ? Array.from(selected) : [];
+    if (names.length === 0) {
+      showToast(t('cache.noFilesSelected'), 'info');
+      return;
+    }
+    const ok = await confirmAction(t('cache.confirmBatchDeleteFiles', { count: names.length }), { okText: t('common.delete') });
+    if (!ok) return;
+
+    isLocalDeleting = true;
+    setActionButtonsState();
+    let success = 0;
+    let failed = 0;
+    const successNames = [];
+    const batchSize = 10;
+    for (let i = 0; i < names.length; i += batchSize) {
+      const chunk = names.slice(i, i + batchSize);
+      const results = await Promise.all(chunk.map((name) => requestDeleteLocalFile(type, name)));
+      results.forEach((okDelete, idx) => {
+        if (okDelete) {
+          success += 1;
+          successNames.push(chunk[idx]);
+        } else {
+          failed += 1;
+        }
+      });
+    }
+
+    successNames.forEach((name) => selected?.delete(name));
+    const state = getLocalState(type);
+    if (state) state.total = Math.max(0, (Number(state.total) || 0) - success);
+    if (success > 0) await refreshLocalListAfterDelete(type);
+    else updateSelectedCount();
+    await refreshLocalStats({ silent: true });
+    isLocalDeleting = false;
+    setActionButtonsState();
+
+    if (failed === 0) {
+      showToast(t('cache.deletedFiles', { count: success }), 'success');
+      return;
+    }
+    showToast(t('cache.deleteResult', { success, failed }), 'info');
   };
 
   function setupOnlinePaginationControls() {
@@ -721,6 +889,7 @@
     apiKey = await ensureAdminKey();
     if (apiKey === null) return;
     cacheUI();
+    syncLocalPagingState();
     setupLocalPaginationControls();
     setupOnlinePaginationControls();
     setupCacheCards();

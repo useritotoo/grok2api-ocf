@@ -488,6 +488,10 @@
   align-self: flex-start;
 }
 
+.cache-entry-card--video .cache-list-actions {
+  align-self: flex-start;
+}
+
 .cache-entry-card:hover {
   transform: translateY(-2px);
   border-color: rgba(17, 24, 39, 0.14);
@@ -529,6 +533,10 @@
   cursor: zoom-in;
 }
 
+.cache-entry-preview--video {
+  cursor: zoom-in;
+}
+
 .cache-entry-preview:hover {
   transform: translateY(-1px);
   box-shadow: 0 20px 44px rgba(15, 23, 42, 0.22), inset 0 0 0 1px rgba(255,255,255,0.18);
@@ -551,6 +559,8 @@
   height: 100%;
   object-fit: cover;
   display: block;
+  pointer-events: none;
+  background: #0f172a;
 }
 
 .cache-entry-preview--video,

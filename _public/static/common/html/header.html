@@ -1,6 +1,6 @@
 <nav class="bg-[var(--bg)]/80 backdrop-blur-md fixed top-0 left-0 right-0 z-10">
-  <div class="max-w-7xl mx-auto px-6 h-14 flex items-center justify-between">
-    <div class="flex items-center gap-6">
+  <div class="max-w-7xl mx-auto px-6 h-14 app-nav-shell">
+    <div class="app-nav-brand">
       <div class="flex items-center gap-2">
         <a href="/" target="_blank" rel="noopener"
           class="brand-link font-semibold tracking-tight hover:text-black">
@@ -11,19 +11,31 @@
           <span>Grok2API</span>
         </a>
         <a href="https://github.com/useritotoo/grok2api-ocf" target="_blank" rel="noopener"
-          class="text-xs text-[var(--accents-4)] hover:text-black">@ocf</a>
+          class="nav-brand-tag text-xs text-[var(--accents-4)] hover:text-black">@ocf</a>
       </div>
-      <div class="h-4 w-px bg-[var(--border)]"></div>
-      <a href="/admin/token" class="nav-link text-sm" data-nav="/admin/token" data-i18n="nav.tokenManage">Token管理</a>
-      <a href="/admin/config" class="nav-link text-sm" data-nav="/admin/config" data-i18n="nav.configManage">配置管理</a>
-      <a href="/admin/cache" class="nav-link text-sm" data-nav="/admin/cache" data-i18n="nav.cacheManage">缓存管理</a>
     </div>
-    <div class="nav-actions">
-      <button id="lang-toggle" type="button" class="nav-action-btn" onclick="I18n.toggleLang()">EN</button>
-      <button id="storage-mode-btn" type="button" class="nav-action-btn" data-i18n-title="nav.storageMode" title="存储模式">-</button>
-      <a href="https://github.com/chenyme/grok2api/issues" target="_blank" rel="noopener"
-        class="nav-action-btn" data-i18n="nav.feedback">反馈</a>
-      <button onclick="logout()" type="button" class="nav-action-btn" data-i18n="nav.logout">退出</button>
+    <button class="nav-menu-toggle" type="button" aria-expanded="false" aria-controls="app-nav-menu" data-nav-toggle>
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+        stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <line x1="3" y1="6" x2="21" y2="6"></line>
+        <line x1="3" y1="12" x2="21" y2="12"></line>
+        <line x1="3" y1="18" x2="21" y2="18"></line>
+      </svg>
+    </button>
+    <div id="app-nav-menu" class="app-nav-menu" data-nav-menu>
+      <div class="app-nav-links">
+        <div class="h-4 w-px bg-[var(--border)] nav-divider"></div>
+        <a href="/admin/token" class="nav-link text-sm" data-nav="/admin/token" data-i18n="nav.tokenManage">Token管理</a>
+        <a href="/admin/config" class="nav-link text-sm" data-nav="/admin/config" data-i18n="nav.configManage">配置管理</a>
+        <a href="/admin/cache" class="nav-link text-sm" data-nav="/admin/cache" data-i18n="nav.cacheManage">缓存管理</a>
+      </div>
+      <div class="nav-actions">
+        <button id="lang-toggle" type="button" class="nav-action-btn" onclick="I18n.toggleLang()">EN</button>
+        <button id="storage-mode-btn" type="button" class="nav-action-btn" data-i18n-title="nav.storageMode" title="存储模式">-</button>
+        <a href="https://github.com/chenyme/grok2api/issues" target="_blank" rel="noopener"
+          class="nav-action-btn" data-i18n="nav.feedback">反馈</a>
+        <button onclick="logout()" type="button" class="nav-action-btn" data-i18n="nav.logout">退出</button>
+      </div>
     </div>
   </div>
 </nav>

@@ -26,6 +26,11 @@ body {
   flex-wrap: wrap;
 }
 
+.video-settings-actions {
+  margin-top: 16px;
+  justify-content: flex-end;
+}
+
 .video-main-grid {
   display: grid;
   grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
@@ -424,7 +429,7 @@ body {
   border-radius: 8px;
   background: #000;
   overflow: hidden;
-  cursor: pointer;
+  cursor: default;
 }
 
 .video-item video {
@@ -749,6 +754,14 @@ body {
 
   .video-actions button {
     flex: 1 1 auto;
+  }
+
+  .video-settings-actions {
+    justify-content: flex-end;
+  }
+
+  .video-settings-actions button {
+    flex: 0 0 auto;
   }
 
   .meta-grid {

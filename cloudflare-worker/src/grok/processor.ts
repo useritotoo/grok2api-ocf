@@ -196,6 +196,10 @@ function stripThinkMarkup(content: string): string {
   return String(content ?? "").replace(/<\/?think>/g, "");
 }
 
+function normalizeLooseWhitespace(content: string): string {
+  return String(content ?? "").replace(/\s+/g, " ").trim();
+}
+
 function findFlexiblePrefixEnd(finalMessage: string, streamedText: string): number {
   if (!streamedText) return 0;
 
@@ -220,14 +224,23 @@ function findFlexiblePrefixEnd(finalMessage: string, streamedText: string): numb
 }
 
 function buildFinalMessageSuffix(finalMessage: string, streamedAnswerText: string): string {
-  if (!streamedAnswerText) return finalMessage;
-  if (finalMessage.startsWith(streamedAnswerText)) {
-    return finalMessage.slice(streamedAnswerText.length);
+  const streamedText = stripThinkMarkup(streamedAnswerText);
+  if (!streamedText) return finalMessage;
+  if (normalizeLooseWhitespace(finalMessage) === normalizeLooseWhitespace(streamedText)) {
+    return "";
+  }
+  if (finalMessage.startsWith(streamedText)) {
+    return finalMessage.slice(streamedText.length);
   }
 
-  const overlapEnd = findFlexiblePrefixEnd(finalMessage, stripThinkMarkup(streamedAnswerText));
+  const overlapEnd = findFlexiblePrefixEnd(finalMessage, streamedText);
   if (overlapEnd >= 0) {
     return finalMessage.slice(overlapEnd);
+  }
+
+  const streamedOverlapEnd = findFlexiblePrefixEnd(streamedText, finalMessage);
+  if (streamedOverlapEnd >= 0 && !streamedText.slice(streamedOverlapEnd).trim()) {
+    return "";
   }
 
   return finalMessage;
@@ -470,9 +483,13 @@ export function createOpenAiStreamFromGrokNdjson(
             }
 
             if (cardMarkdown) {
+              const closing = closeThinkingPrefix();
+              const separator = closing || !streamedAnswerText || /[\r\n]$/.test(streamedAnswerText) ? "" : "\n";
+              const emitted = `${closing}${separator}${cardMarkdown}\n`;
               controller.enqueue(
-                encoder.encode(makeChunk(id, created, currentModel, `${closeThinkingPrefix()}${cardMarkdown}\n`)),
+                encoder.encode(makeChunk(id, created, currentModel, emitted)),
               );
+              streamedAnswerText += stripThinkMarkup(emitted);
               continue;
             }
 

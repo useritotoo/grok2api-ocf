@@ -26,22 +26,6 @@
             输入提示词或参考图生成视频，也支持在下方工作区继续延长视频。
           </p>
         </div>
-        <div class="video-actions">
-          <button id="startBtn" class="geist-button gap-2" type="button">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-              stroke-linecap="round" stroke-linejoin="round">
-              <polygon points="5 3 19 12 5 21 5 3" />
-            </svg>
-            <span data-i18n="video.startGenerate">开始生成</span>
-          </button>
-          <button id="stopBtn" class="geist-button-outline gap-2 hidden" type="button">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-              stroke-linecap="round" stroke-linejoin="round">
-              <rect x="5" y="5" width="14" height="14" />
-            </svg>
-            <span data-i18n="common.stop">停止</span>
-          </button>
-        </div>
       </div>
 
       <div class="h-px bg-[var(--border)]"></div>
@@ -62,9 +46,6 @@
                 <div class="ref-controls">
                   <input id="imageUrlInput" class="geist-input" placeholder="https://... 或 data:image/..."
                     data-i18n-placeholder="video.referenceImagePlaceholder">
-                </div>
-                <div class="ref-meta">
-                  <span id="imageFileName" class="ref-name" data-i18n="common.noFileSelected">未选择文件</span>
                 </div>
               </div>
               <div class="settings-block ratio-block">
@@ -108,6 +89,22 @@
                 <button id="clearImageFileBtn" class="geist-button-outline text-xs px-3" type="button"
                   data-i18n="video.clearImage">清除</button>
               </div>
+            </div>
+            <div class="video-actions video-settings-actions">
+              <button id="startBtn" class="geist-button gap-2" type="button">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                  stroke-linecap="round" stroke-linejoin="round">
+                  <polygon points="5 3 19 12 5 21 5 3" />
+                </svg>
+                <span data-i18n="video.startGenerate">开始生成</span>
+              </button>
+              <button id="stopBtn" class="geist-button-outline gap-2 hidden" type="button">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                  stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="5" y="5" width="14" height="14" />
+                </svg>
+                <span data-i18n="common.stop">停止</span>
+              </button>
             </div>
           </div>
 
@@ -239,7 +236,7 @@
           <aside class="video-card history-panel">
             <div class="panel-head">
               <div class="card-title">历史视频</div>
-              <button id="clearHistoryBtn" class="geist-button-outline text-xs px-3" type="button">娓呯┖鍘嗗彶</button>
+              <button id="clearHistoryBtn" class="geist-button-outline text-xs px-3" type="button">清空历史</button>
             </div>
             <div id="videoEmpty" class="video-empty">
               这里会保存本次生成和延长出来的视频，点击任意卡片即可替换到工作区继续操作。

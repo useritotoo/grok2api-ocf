@@ -292,6 +292,75 @@ test("createOpenAiStreamFromGrokNdjson preserves final image cards when streamed
   assert.doesNotMatch(contents[2], /<grok:render/);
 });
 
+test("createOpenAiStreamFromGrokNdjson does not duplicate card markdown already streamed before final message", async () => {
+  const payload = [
+    JSON.stringify({ result: { response: { token: "prefix ", isThinking: false } } }),
+    JSON.stringify({
+      result: {
+        response: {
+          cardAttachment: {
+            jsonData: JSON.stringify({
+              id: "card-1",
+              image: {
+                original: "https://example.com/cat.png",
+                title: "orange cat",
+              },
+            }),
+          },
+        },
+      },
+    }),
+    JSON.stringify({ result: { response: { token: "\nsuffix", isThinking: false } } }),
+    JSON.stringify({
+      result: {
+        response: {
+          modelResponse: {
+            message:
+              'prefix <grok:render card_id="card-1" card_type="generated_image_card"></grok:render>\nsuffix',
+            cardAttachmentsJson: [
+              JSON.stringify({
+                id: "card-1",
+                jsonData: JSON.stringify({
+                  id: "card-1",
+                  image: {
+                    original: "https://example.com/cat.png",
+                    title: "orange cat",
+                  },
+                }),
+              }),
+            ],
+            generatedImageUrls: [],
+          },
+        },
+      },
+    }),
+  ].join("\n") + "\n";
+
+  const output = await readStream(
+    createOpenAiStreamFromGrokNdjson(new Response(payload), {
+      cookie: "",
+      settings: {
+        filtered_tags: "xaiartifact,xai:tool_usage_card,grok:render",
+        show_thinking: true,
+        stream_first_response_timeout: 1,
+        stream_chunk_timeout: 1,
+        stream_total_timeout: 1,
+        video_poster_preview: false,
+      } as any,
+      global: { base_url: "" } as any,
+      origin: "https://worker.example.com",
+      requestedModel: "grok-4",
+    }),
+  );
+
+  const contents = extractDeltaContents(output);
+  assert.deepEqual(contents, [
+    "prefix ",
+    "\n![orange cat](https://example.com/cat.png)\n",
+    "\nsuffix",
+  ]);
+});
+
 test("parseOpenAiFromGrokNdjson replaces grok:render image cards with markdown", async () => {
   const payload = [
     JSON.stringify({

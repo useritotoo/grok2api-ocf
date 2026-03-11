@@ -68,7 +68,6 @@
   const DEFAULT_REASONING_EFFORT = 'low';
   const EDIT_TIMELINE_MAX = 100000;
   const DEFAULT_EXTEND_SECONDS = 10;
-  const MAX_EXTENSION_START_SECONDS = 20;
   const TAIL_FRAME_GUARD_MS = 80;
   const APPROX_VIDEO_FPS = 30;
   const referenceUploadCache = (window.VideoReferenceCache && typeof VideoReferenceCache.createReferenceUploadCache === 'function')
@@ -565,6 +564,16 @@
     return authHeader;
   }
 
+  function normalizeMediaUrl(value) {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    try {
+      return new URL(raw, window.location.href).toString();
+    } catch (e) {
+      return raw;
+    }
+  }
+
   function buildSseUrl(taskId, rawPublicKey) {
     const httpProtocol = window.location.protocol === 'https:' ? 'https' : 'http';
     const base = `${httpProtocol}://${window.location.host}/v1/function/video/sse`;
@@ -582,12 +591,19 @@
     const safeUrl = String(url || '').trim();
     const postId = String(opts.extendPostId || extractPostIdFromFileName(opts.name || safeUrl)).trim();
     const rootAttachmentId = String(opts.rootAttachmentId ?? '').trim();
+    const nextRootAttachmentId = Object.prototype.hasOwnProperty.call(opts, 'rootAttachmentId')
+      ? (rootAttachmentId || postId || '')
+      : (originalFileAttachmentId || postId || '');
+    const forceReload = opts.forceReload !== false;
+    const currentWorkspaceUrl = editVideo ? normalizeMediaUrl(editVideo.currentSrc || editVideo.getAttribute('src') || '') : '';
+    const nextWorkspaceUrl = normalizeMediaUrl(safeUrl);
+    const shouldReload = forceReload || currentWorkspaceUrl !== nextWorkspaceUrl;
     selectedVideoUrl = safeUrl;
     currentExtendPostId = postId;
     if (Object.prototype.hasOwnProperty.call(opts, 'rootAttachmentId')) {
-      originalFileAttachmentId = rootAttachmentId || postId || '';
+      originalFileAttachmentId = nextRootAttachmentId;
     } else if (postId && !originalFileAttachmentId) {
-      originalFileAttachmentId = postId;
+      originalFileAttachmentId = nextRootAttachmentId;
     }
     if (editHint) {
       editHint.classList.toggle('hidden', Boolean(safeUrl));
@@ -600,11 +616,21 @@
         // ignore
       }
       if (safeUrl) {
-        editVideo.src = safeUrl;
+        if (shouldReload) {
+          editVideo.src = safeUrl;
+          editVideo.load();
+        }
       } else {
-        editVideo.removeAttribute('src');
+        if (currentWorkspaceUrl) {
+          editVideo.removeAttribute('src');
+          editVideo.load();
+        }
       }
-      editVideo.load();
+    }
+    if (!shouldReload) {
+      setEditMeta();
+      syncTimelineAvailability();
+      return;
     }
     lockedFrameIndex = -1;
     lockedTimestampMs = 0;
@@ -612,7 +638,7 @@
     syncTimelineAvailability();
   }
 
-  function selectHistoryItem(item) {
+  function selectHistoryItem(item, options) {
     if (!item) return;
     const safeUrl = String(item.dataset.url || '').trim();
     if (!safeUrl) return;
@@ -624,7 +650,18 @@
       extendPostId: item.dataset.postId || '',
       rootAttachmentId: item.dataset.rootAttachmentId || item.dataset.postId || '',
       label: titleEl ? titleEl.textContent.trim() : '',
+      forceReload: options && Object.prototype.hasOwnProperty.call(options, 'forceReload') ? options.forceReload : true,
     });
+  }
+
+  function syncWorkspaceFromPreview(item) {
+    if (!item) return;
+    const safeUrl = String(item.dataset.url || '').trim();
+    if (!safeUrl) return;
+    const syncedUrl = String(item.dataset.workspaceSyncedUrl || '').trim();
+    if (syncedUrl === safeUrl) return;
+    item.dataset.workspaceSyncedUrl = safeUrl;
+    selectHistoryItem(item, { forceReload: false });
   }
 
   async function uploadReferenceImage(authHeader, file) {
@@ -815,7 +852,7 @@
     }
     updateItemLinks(container, videoUrl, options);
     if (videoUrl) {
-      selectHistoryItem(container);
+      syncWorkspaceFromPreview(container);
     }
   }
 
@@ -828,15 +865,15 @@
     body.innerHTML = `\n      <video controls preload="metadata">\n        <source src="${safeUrl}" type="video/mp4">\n      </video>\n    `;
     updateItemLinks(container, safeUrl, options);
     if (safeUrl) {
-      selectHistoryItem(container);
+      syncWorkspaceFromPreview(container);
     }
   }
 
   function getSafeEditMaxTimestampMs() {
-    if (!editVideo) return MAX_EXTENSION_START_SECONDS * 1000;
+    if (!editVideo) return Number.POSITIVE_INFINITY;
     const durationMs = Math.floor(Math.max(0, Number(editVideo.duration || 0) * 1000));
-    if (!durationMs) return MAX_EXTENSION_START_SECONDS * 1000;
-    return Math.max(0, Math.min(durationMs - TAIL_FRAME_GUARD_MS, MAX_EXTENSION_START_SECONDS * 1000));
+    if (!durationMs) return Number.POSITIVE_INFINITY;
+    return Math.max(0, durationMs - TAIL_FRAME_GUARD_MS);
   }
 
   function clampEditTimestampMs(ms) {
@@ -853,11 +890,7 @@
     editTimeline.value = String(Math.round(ratio * EDIT_TIMELINE_MAX));
     updateDeleteZoneTrack(editTimeline);
     if (editTimeText) {
-      let label = formatMs(lockedTimestampMs);
-      if (lockedTimestampMs >= MAX_EXTENSION_START_SECONDS * 1000 && duration > MAX_EXTENSION_START_SECONDS) {
-        label += '（最长 20 秒）';
-      }
-      editTimeText.textContent = label;
+      editTimeText.textContent = formatMs(lockedTimestampMs);
     }
   }
 
@@ -872,11 +905,7 @@
     lockedFrameIndex = Math.max(0, Math.round(safeSeconds * APPROX_VIDEO_FPS));
     setEditMeta();
     if (editTimeText) {
-      let label = formatMs(lockedTimestampMs);
-      if (lockedTimestampMs >= MAX_EXTENSION_START_SECONDS * 1000 && Number(editVideo.duration || 0) > MAX_EXTENSION_START_SECONDS) {
-        label += '（最长 20 秒）';
-      }
-      editTimeText.textContent = label;
+      editTimeText.textContent = formatMs(lockedTimestampMs);
     }
   }
 
@@ -1285,9 +1314,9 @@
       setStatus('', tSafe('common.notConnected', '鏈繛鎺?));
       */
       if (durationValue) {
-        durationValue.textContent = tSafe('video.elapsedTimeNone', 'Elapsed -');
+        durationValue.textContent = tSafe('video.elapsedTimeNone', '耗时 -');
       }
-      setStatus('', tSafe('common.notConnected', 'Not connected'));
+      setStatus('', tSafe('common.notConnected', '未连接'));
       resetWorkspaceVideo();
       revokeWorkVideoObjectUrl();
       if (workVideoFileInput) {
@@ -1299,10 +1328,7 @@
   if (clearHistoryBtn) {
     clearHistoryBtn.addEventListener('click', () => {
       if (isRunning) {
-        /*
-        toast('璇峰厛鍋滄褰撳墠浠诲姟锛屽啀娓呯┖鍘嗗彶瑙嗛銆?, 'warning');
-        */
-        toast('Stop the current task before clearing history.', 'warning');
+        toast('请先停止当前任务，再清空历史视频。', 'warning');
         return;
       }
       currentPreviewItem = null;
@@ -1425,6 +1451,7 @@
         return;
       }
       if (target.classList.contains('video-open')) return;
+      if (target.closest('video')) return;
       selectHistoryItem(item);
     });
   }
@@ -1445,9 +1472,6 @@
       }
       if (imageUrlInput) {
         imageUrlInput.value = file.name;
-      }
-      if (imageFileName) {
-        imageFileName.textContent = file.name;
       }
     });
   }
@@ -1491,7 +1515,7 @@
       const duration = Number(editVideo.duration || 0);
       if (!Number.isFinite(duration) || duration <= 0) return;
       const ratio = Number(editTimeline.value || 0) / EDIT_TIMELINE_MAX;
-      const nextTime = Math.min(duration * ratio, MAX_EXTENSION_START_SECONDS);
+      const nextTime = duration * ratio;
       editVideo.currentTime = nextTime;
       updateDeleteZoneTrack(editTimeline);
       lockFrameByCurrentTime();
