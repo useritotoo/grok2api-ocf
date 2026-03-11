@@ -118,6 +118,153 @@ function normalizeReasoningEffort(input: unknown): string | null {
   return value;
 }
 
+function extractPostIdFromAssetName(input: unknown): string {
+  const raw = String(input ?? "").trim();
+  if (!raw) return "";
+  const generatedMatch = raw.match(/generated-([0-9a-fA-F-]{32,36})-/);
+  if (generatedMatch?.[1]) {
+    return generatedMatch[1];
+  }
+  const allMatches = raw.match(/[0-9a-fA-F-]{32,36}/g);
+  return allMatches && allMatches.length ? allMatches[allMatches.length - 1] : "";
+}
+
+function deepGet(input: unknown, path: string[]): unknown {
+  let current = input;
+  for (const key of path) {
+    if (!current || typeof current !== "object" || Array.isArray(current)) {
+      return undefined;
+    }
+    current = (current as Record<string, unknown>)[key];
+  }
+  return current;
+}
+
+function firstNonEmptyString(input: unknown, paths: string[][]): string {
+  for (const path of paths) {
+    const value = deepGet(input, path);
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+  return "";
+}
+
+function normalizeWebSocketUrl(input: unknown): string {
+  if (typeof input !== "string") return "";
+  let value = input.trim();
+  if (!value) return "";
+  if (!value.includes("://")) {
+    value = `wss://${value}`;
+  }
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== "ws:" && parsed.protocol !== "wss:") return "";
+    const pathname = (parsed.pathname || "").replace(/\/+$/, "");
+    return `${parsed.protocol}//${parsed.host}${pathname}`;
+  } catch {
+    return "";
+  }
+}
+
+function normalizeWebSocketUrlList(input: unknown): string[] {
+  const values = Array.isArray(input)
+    ? input
+    : typeof input === "string"
+      ? input.replaceAll("\n", ",").split(",")
+      : [];
+  const urls: string[] = [];
+  for (const item of values) {
+    const normalized = normalizeWebSocketUrl(item);
+    if (!normalized || urls.includes(normalized)) continue;
+    urls.push(normalized);
+  }
+  return urls;
+}
+
+function normalizeIceServers(input: unknown): Array<Record<string, unknown>> {
+  if (!Array.isArray(input)) return [];
+  const normalized: Array<Record<string, unknown>> = [];
+  for (const item of input) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    const record = item as Record<string, unknown>;
+    const rawUrls = record.urls ?? record.url;
+    const urls = Array.isArray(rawUrls)
+      ? rawUrls.filter((value): value is string => typeof value === "string" && value.trim().length > 0).map((value) => value.trim())
+      : typeof rawUrls === "string" && rawUrls.trim()
+        ? [rawUrls.trim()]
+        : [];
+    if (!urls.length) continue;
+    const entry: Record<string, unknown> = { urls };
+    if (typeof record.username === "string" && record.username.trim()) {
+      entry.username = record.username.trim();
+    }
+    if (record.credential !== undefined && record.credential !== null) {
+      entry.credential = record.credential;
+    }
+    normalized.push(entry);
+  }
+  return normalized;
+}
+
+function extractVoiceConnectionInfo(input: unknown): {
+  url: string;
+  urls: string[];
+  iceServers: Array<Record<string, unknown>>;
+} {
+  const primary = normalizeWebSocketUrl(
+    firstNonEmptyString(input, [
+      ["url"],
+      ["livekitUrl"],
+      ["livekit_url"],
+      ["livekitServerUrl"],
+      ["ws_url"],
+      ["serverUrl"],
+      ["livekit", "url"],
+      ["connection", "url"],
+      ["connectionDetails", "url"],
+      ["connection_details", "url"],
+    ]),
+  );
+
+  const candidates: string[] = [];
+  for (const value of [
+    primary,
+    ...normalizeWebSocketUrlList(deepGet(input, ["urls"])),
+    ...normalizeWebSocketUrlList(deepGet(input, ["livekitUrls"])),
+    ...normalizeWebSocketUrlList(deepGet(input, ["livekit_urls"])),
+    ...normalizeWebSocketUrlList(deepGet(input, ["connection", "urls"])),
+    ...normalizeWebSocketUrlList(deepGet(input, ["connectionDetails", "urls"])),
+    ...normalizeWebSocketUrlList(deepGet(input, ["connection_details", "urls"])),
+    "wss://livekit.grok.com",
+  ]) {
+    if (!value || candidates.includes(value)) continue;
+    candidates.push(value);
+  }
+
+  let iceServers: Array<Record<string, unknown>> = [];
+  for (const path of [
+    ["iceServers"],
+    ["ice_servers"],
+    ["rtcConfig", "iceServers"],
+    ["rtcConfig", "ice_servers"],
+    ["rtc_config", "iceServers"],
+    ["rtc_config", "ice_servers"],
+    ["connectionDetails", "rtcConfig", "iceServers"],
+    ["connectionDetails", "rtc_config", "ice_servers"],
+    ["connection_details", "rtcConfig", "iceServers"],
+  ]) {
+    iceServers = normalizeIceServers(deepGet(input, path));
+    if (iceServers.length) break;
+  }
+
+  return {
+    url: candidates[0] ?? "wss://livekit.grok.com",
+    urls: candidates.length ? candidates : ["wss://livekit.grok.com"],
+    iceServers,
+  };
+}
+
 function extractImageReference(input: unknown): string | null {
   if (typeof input === "string") {
     const value = input.trim();
@@ -489,7 +636,7 @@ async function buildVoiceTokenResponse(
     );
   }
 
-  const data = (await upstream.json().catch(() => ({}))) as { token?: string };
+  const data = (await upstream.json().catch(() => ({}))) as Record<string, unknown>;
   if (!data?.token) {
     return Response.json(
       { error: "Upstream returned no voice token", code: "upstream_error" },
@@ -497,11 +644,17 @@ async function buildVoiceTokenResponse(
     );
   }
 
+  const connection = extractVoiceConnectionInfo(data);
+  const participantName = firstNonEmptyString(data, [["participant_name"], ["participantName"], ["identity"]]);
+  const roomName = firstNonEmptyString(data, [["room_name"], ["roomName"], ["room"]]);
+
   return Response.json({
-    token: data.token,
-    url: "wss://livekit.grok.com",
-    participant_name: "",
-    room_name: "",
+    token: String(data.token),
+    url: connection.url,
+    urls: connection.urls,
+    participant_name: participantName,
+    room_name: roomName,
+    ice_servers: connection.iceServers.length ? connection.iceServers : undefined,
   });
 }
 
@@ -811,6 +964,7 @@ functionRoutes.get("/v1/function/video/cache/list", async (c) => {
     page_size: pageSize,
     items: items.map((item) => {
       const name = item.key.startsWith("video/") ? item.key.slice("video/".length) : item.key;
+      const postId = extractPostIdFromAssetName(name);
       const viewUrl = `/images/${encodeURIComponent(name)}`;
       return {
         name,
@@ -818,6 +972,8 @@ functionRoutes.get("/v1/function/video/cache/list", async (c) => {
         mtime_ms: item.last_access_at || item.created_at,
         preview_url: viewUrl,
         view_url: viewUrl,
+        post_id: postId || undefined,
+        root_attachment_id: postId || undefined,
       };
     }),
   });

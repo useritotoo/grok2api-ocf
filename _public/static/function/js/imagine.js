@@ -234,9 +234,13 @@
   }
 
   function clearReferenceSelection() {
+    const previousFileName = selectedReferenceFile && selectedReferenceFile.name ? selectedReferenceFile.name : '';
     selectedReferenceFile = null;
     referenceUploadCache.reset();
-    currentReferenceUrl = imageUrlInput ? imageUrlInput.value.trim() : currentReferenceUrl;
+    if (imageUrlInput && imageUrlInput.value.trim() === previousFileName) {
+      imageUrlInput.value = '';
+    }
+    currentReferenceUrl = imageUrlInput ? imageUrlInput.value.trim() : '';
     if (imageFileInput) {
       imageFileInput.value = '';
     }
@@ -273,7 +277,9 @@
 
   async function resolveReferenceImage(authHeader) {
     const rawUrl = imageUrlInput ? imageUrlInput.value.trim() : '';
-    if (selectedReferenceFile && rawUrl) {
+    const fileName = selectedReferenceFile && selectedReferenceFile.name ? selectedReferenceFile.name.trim() : '';
+    const manualUrl = selectedReferenceFile && rawUrl === fileName ? '' : rawUrl;
+    if (selectedReferenceFile && manualUrl) {
       toast(t('imagine.referenceConflict'), 'error');
       throw new Error('invalid_reference');
     }
@@ -281,7 +287,7 @@
       return referenceUploadCache.getOrUpload(selectedReferenceFile, (file) => uploadReferenceImage(authHeader, file));
     }
     referenceUploadCache.reset();
-    return rawUrl || '';
+    return manualUrl || '';
   }
 
   async function createImagineTask(prompt, ratio, authHeader, nsfwEnabled, referenceUrl) {
@@ -970,6 +976,9 @@
       currentReferenceUrl = '';
       if (!referenceUploadCache.peek(file)) {
         referenceUploadCache.reset();
+      }
+      if (imageUrlInput) {
+        imageUrlInput.value = file.name;
       }
       if (imageFileName) {
         imageFileName.textContent = file.name;

@@ -70,6 +70,87 @@ test("createOpenAiStreamFromGrokNdjson emits markdown image for cardAttachment",
   assert.match(output, /!\[demo\]\(https:\/\/example\.com\/demo\.png\)/);
 });
 
+test("createOpenAiStreamFromGrokNdjson closes think blocks before streaming cardAttachment markdown", async () => {
+  const payload = [
+    JSON.stringify({ result: { response: { token: "analysis", isThinking: true } } }),
+    JSON.stringify({
+      result: {
+        response: {
+          cardAttachment: {
+            jsonData: JSON.stringify({
+              image: {
+                original: "https://example.com/demo.png",
+                title: "demo",
+              },
+            }),
+          },
+        },
+      },
+    }),
+  ].join("\n") + "\n";
+
+  const output = await readStream(
+    createOpenAiStreamFromGrokNdjson(new Response(payload), {
+      cookie: "",
+      settings: {
+        filtered_tags: "xaiartifact,xai:tool_usage_card,grok:render",
+        show_thinking: true,
+        stream_first_response_timeout: 1,
+        stream_chunk_timeout: 1,
+        stream_total_timeout: 1,
+        video_poster_preview: false,
+      } as any,
+      global: { base_url: "" } as any,
+      origin: "https://worker.example.com",
+      requestedModel: "grok-4",
+    }),
+  );
+
+  const contents = extractDeltaContents(output);
+  assert.equal(contents[0], "<think>\nanalysis");
+  assert.equal(contents[1], "\n</think>\n![demo](https://example.com/demo.png)\n");
+});
+
+test("createOpenAiStreamFromGrokNdjson closes think blocks before generated image output", async () => {
+  const payload = [
+    JSON.stringify({ result: { response: { token: "analysis", isThinking: true } } }),
+    JSON.stringify({
+      result: {
+        response: {
+          imageAttachmentInfo: { attachmentId: "img-1" },
+          modelResponse: {
+            generatedImageUrls: ["https://assets.example.com/generated.png"],
+          },
+        },
+      },
+    }),
+  ].join("\n") + "\n";
+
+  const output = await readStream(
+    createOpenAiStreamFromGrokNdjson(new Response(payload), {
+      cookie: "",
+      settings: {
+        filtered_tags: "xaiartifact,xai:tool_usage_card,grok:render",
+        show_thinking: true,
+        stream_first_response_timeout: 1,
+        stream_chunk_timeout: 1,
+        stream_total_timeout: 1,
+        video_poster_preview: false,
+      } as any,
+      global: { base_url: "" } as any,
+      origin: "https://worker.example.com",
+      requestedModel: "grok-4",
+    }),
+  );
+
+  const contents = extractDeltaContents(output);
+  assert.equal(contents[0], "<think>\nanalysis");
+  assert.equal(
+    contents[1],
+    "\n</think>\n![Generated Image](https://worker.example.com/images/u_aHR0cHM6Ly9hc3NldHMuZXhhbXBsZS5jb20vZ2VuZXJhdGVkLnBuZw)",
+  );
+});
+
 test("createOpenAiStreamFromGrokNdjson closes think blocks and emits final modelResponse text", async () => {
   const payload = [
     JSON.stringify({ result: { response: { token: "analysis", isThinking: true } } }),

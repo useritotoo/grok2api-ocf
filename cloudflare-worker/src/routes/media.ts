@@ -141,6 +141,48 @@ function toUpstreamHeaders(args: { pathname: string; cookie: string; settings: A
   return headers;
 }
 
+function shouldTryCacheContent(contentLength: number, maxBytes: number): boolean {
+  return !Number.isFinite(contentLength) || (contentLength > 0 && contentLength <= maxBytes);
+}
+
+async function persistUpstreamAsset(args: {
+  env: Env;
+  key: string;
+  type: CacheType;
+  body: ReadableStream<Uint8Array>;
+  contentType: string;
+  contentLength: number;
+  maxBytes: number;
+}): Promise<void> {
+  const tzOffset = parseIntSafe(args.env.CACHE_RESET_TZ_OFFSET_MINUTES, 480);
+  const expiresAt = nextLocalMidnightExpirationSeconds(nowMs(), tzOffset);
+  let byteCount = 0;
+  const limiter = new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      byteCount += chunk.byteLength;
+      if (byteCount > args.maxBytes) throw new Error("KV value too large");
+      controller.enqueue(chunk);
+    },
+  });
+  const toKv = args.body.pipeThrough(limiter);
+  const knownSize = Number.isFinite(args.contentLength) && args.contentLength > 0 ? args.contentLength : 0;
+  await args.env.KV_CACHE.put(args.key, toKv, {
+    expiration: expiresAt,
+    metadata: { contentType: args.contentType, size: knownSize, type: args.type },
+  });
+  const finalSize = knownSize || byteCount;
+  const now = nowMs();
+  await upsertCacheRow(args.env.DB, {
+    key: args.key,
+    type: args.type,
+    size: finalSize,
+    content_type: args.contentType,
+    created_at: now,
+    last_access_at: now,
+    expires_at: expiresAt * 1000,
+  });
+}
+
 mediaRoutes.get("/images/:imgPath{.+}", async (c) => {
   const imgPath = c.req.param("imgPath");
 
@@ -229,41 +271,48 @@ mediaRoutes.get("/images/:imgPath{.+}", async (c) => {
   const contentLengthHeader = upstream.headers.get("content-length") ?? "";
   const contentLength = contentLengthHeader ? Number(contentLengthHeader) : NaN;
   const maxBytes = Math.min(25 * 1024 * 1024, Math.max(1, parseIntSafe(c.env.KV_CACHE_MAX_BYTES, 25 * 1024 * 1024)));
-  const shouldTryCache =
-    !rangeHeader &&
-    (!Number.isFinite(contentLength) || (contentLength > 0 && contentLength <= maxBytes));
+  const shouldTryCache = !rangeHeader && shouldTryCacheContent(contentLength, maxBytes);
+
+  if (rangeHeader && type === "video") {
+    c.executionCtx.waitUntil(
+      (async () => {
+        try {
+          const warmUpstream = await fetch(url.toString(), { headers: baseHeaders });
+          if (!warmUpstream.ok || !warmUpstream.body) return;
+          const warmContentType = warmUpstream.headers.get("content-type") ?? contentType;
+          const warmLengthHeader = warmUpstream.headers.get("content-length") ?? "";
+          const warmContentLength = warmLengthHeader ? Number(warmLengthHeader) : NaN;
+          if (!shouldTryCacheContent(warmContentLength, maxBytes)) return;
+          await persistUpstreamAsset({
+            env: c.env,
+            key,
+            type,
+            body: warmUpstream.body,
+            contentType: warmContentType,
+            contentLength: warmContentLength,
+            maxBytes,
+          });
+        } catch {
+          // ignore warm-cache failures
+        }
+      })(),
+    );
+  }
 
   if (shouldTryCache) {
     const [toKvRaw, toClient] = upstream.body.tee();
-    const tzOffset = parseIntSafe(c.env.CACHE_RESET_TZ_OFFSET_MINUTES, 480);
-    const expiresAt = nextLocalMidnightExpirationSeconds(nowMs(), tzOffset);
 
     c.executionCtx.waitUntil(
       (async () => {
         try {
-          let byteCount = 0;
-          const limiter = new TransformStream<Uint8Array, Uint8Array>({
-            transform(chunk, controller) {
-              byteCount += chunk.byteLength;
-              if (byteCount > maxBytes) throw new Error("KV value too large");
-              controller.enqueue(chunk);
-            },
-          });
-          const toKv = toKvRaw.pipeThrough(limiter);
-
-          await c.env.KV_CACHE.put(key, toKv, {
-            expiration: expiresAt,
-            metadata: { contentType, size: Number.isFinite(contentLength) ? contentLength : byteCount, type },
-          });
-          const now = nowMs();
-          await upsertCacheRow(c.env.DB, {
+          await persistUpstreamAsset({
+            env: c.env,
             key,
             type,
-            size: Number.isFinite(contentLength) ? contentLength : byteCount,
-            content_type: contentType,
-            created_at: now,
-            last_access_at: now,
-            expires_at: expiresAt * 1000,
+            body: toKvRaw,
+            contentType,
+            contentLength,
+            maxBytes,
           });
         } catch {
           // ignore write errors

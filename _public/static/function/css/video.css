@@ -469,14 +469,17 @@ body {
   align-items: center;
   justify-content: space-between;
   margin-bottom: 12px;
+  gap: 10px;
 }
 
 .history-panel .video-stage {
   min-height: 220px;
-  max-height: 980px;
-  overflow: auto;
+  max-height: min(70vh, 760px);
+  overflow-y: auto;
+  overflow-x: hidden;
   background: #fafafa;
   border-color: var(--video-outline);
+  padding-right: 2px;
 }
 
 .history-panel .video-item {
@@ -701,7 +704,9 @@ body {
   font-size: 12px;
   font-weight: 600;
   color: var(--accents-7);
-  word-break: break-all;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .cache-video-sub {

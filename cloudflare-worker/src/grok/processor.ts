@@ -291,7 +291,18 @@ export function createOpenAiStreamFromGrokNdjson(
 
       let buffer = "";
 
+      const closeThinkingPrefix = () => {
+        if (!isThinking) return "";
+        thinkingFinished = true;
+        isThinking = false;
+        return showThinking ? "\n</think>\n" : "";
+      };
+
       const flushStop = () => {
+        const closing = closeThinkingPrefix();
+        if (closing) {
+          controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, closing)));
+        }
         controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, "", "stop")));
         controller.enqueue(encoder.encode(makeDone()));
       };
@@ -443,7 +454,9 @@ export function createOpenAiStreamFromGrokNdjson(
                     linesOut.push(`![Generated Image](${imgUrl})`);
                   }
                   controller.enqueue(
-                    encoder.encode(makeChunk(id, created, currentModel, linesOut.join("\n"), "stop")),
+                    encoder.encode(
+                      makeChunk(id, created, currentModel, `${closeThinkingPrefix()}${linesOut.join("\n")}`, "stop"),
+                    ),
                   );
                   controller.enqueue(encoder.encode(makeDone()));
                   if (opts.onFinish) await opts.onFinish({ status: finalStatus, duration: (Date.now() - startTime) / 1000 });
@@ -457,7 +470,9 @@ export function createOpenAiStreamFromGrokNdjson(
             }
 
             if (cardMarkdown) {
-              controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, `${cardMarkdown}\n`)));
+              controller.enqueue(
+                encoder.encode(makeChunk(id, created, currentModel, `${closeThinkingPrefix()}${cardMarkdown}\n`)),
+              );
               continue;
             }
 
@@ -465,12 +480,7 @@ export function createOpenAiStreamFromGrokNdjson(
               let finalMessage = replaceRenderCardsWithMarkdown(modelResp.message, modelResp.cardAttachmentsJson);
               let messageSuffix = buildFinalMessageSuffix(finalMessage, streamedAnswerText);
 
-              let emitted = "";
-              if (isThinking && showThinking) {
-                emitted += "\n</think>\n";
-                thinkingFinished = true;
-                isThinking = false;
-              }
+              let emitted = closeThinkingPrefix();
               if (messageSuffix) {
                 emitted += messageSuffix;
                 streamedAnswerText = finalMessage;

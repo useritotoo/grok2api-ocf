@@ -1243,16 +1243,27 @@ body.chat-lightbox-open {
 
   .chat-sidebar {
     position: fixed;
-    top: 56px;
-    left: 0;
-    height: calc(100% - 56px);
-    transform: translateX(-110%);
-    transition: transform 0.2s ease;
+    top: 68px;
+    left: 50%;
+    width: min(92vw, 420px);
+    height: auto;
+    max-height: min(62vh, 480px);
+    border: 1px solid rgba(17, 17, 17, 0.08);
+    border-radius: 20px;
+    background: rgba(255, 255, 255, 0.96);
+    box-shadow: 0 24px 54px rgba(15, 15, 15, 0.16);
+    backdrop-filter: blur(14px);
+    transform: translate(-50%, -14px);
+    opacity: 0;
+    pointer-events: none;
+    transition: transform 0.2s ease, opacity 0.2s ease;
     z-index: 50;
   }
 
   .chat-sidebar.open {
-    transform: translateX(0);
+    transform: translate(-50%, 0);
+    opacity: 1;
+    pointer-events: auto;
   }
 
   .sidebar-overlay {
@@ -1273,5 +1284,49 @@ body.chat-lightbox-open {
 
   .sidebar-toggle {
     display: inline-flex;
+  }
+
+  .chat-shell {
+    border-left: none;
+    padding-left: 0;
+  }
+
+  .sidebar-header {
+    padding: 12px 14px 8px;
+    min-height: 0;
+  }
+
+  .sidebar-title {
+    font-size: 13px;
+  }
+
+  .sidebar-list {
+    padding: 8px 10px 12px;
+    gap: 8px;
+  }
+
+  .session-item {
+    padding: 10px 12px;
+    border-radius: 14px;
+    background: rgba(17, 17, 17, 0.02);
+    border: 1px solid transparent;
+  }
+
+  .session-item.active {
+    background: rgba(17, 17, 17, 0.06);
+    border-color: rgba(17, 17, 17, 0.08);
+  }
+
+  .session-title {
+    font-size: 13px;
+    line-height: 1.35;
+  }
+
+  .session-delete {
+    width: 28px;
+    height: 28px;
+    opacity: 1;
+    border-radius: 999px;
+    background: rgba(17, 17, 17, 0.04);
   }
 }

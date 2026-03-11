@@ -32,6 +32,7 @@
   const editHint = document.getElementById('editHint');
   const editCurrentVideo = document.getElementById('editCurrentVideo');
   const historyCount = document.getElementById('historyCount');
+  const clearHistoryBtn = document.getElementById('clearHistoryBtn');
   const editVideo = document.getElementById('editVideo');
   const editTimeline = document.getElementById('editTimeline');
   const editTimeText = document.getElementById('editTimeText');
@@ -128,6 +129,40 @@
     return `${raw.slice(0, 8)}...${raw.slice(-6)}`;
   }
 
+  function base64UrlDecode(value) {
+    const normalized = String(value || '').replace(/-/g, '+').replace(/_/g, '/');
+    if (!normalized) return '';
+    const padding = normalized.length % 4 === 0 ? '' : '='.repeat(4 - (normalized.length % 4));
+    try {
+      return decodeURIComponent(escape(atob(normalized + padding)));
+    } catch (e) {
+      try {
+        return atob(normalized + padding);
+      } catch (inner) {
+        return '';
+      }
+    }
+  }
+
+  function decodeAssetSource(rawValue) {
+    const raw = String(rawValue || '').trim();
+    if (!raw) return '';
+    let token = raw;
+    try {
+      const parsed = new URL(raw, window.location.origin);
+      token = parsed.pathname.split('/').pop() || raw;
+    } catch (e) {
+      token = raw.split('/').pop() || raw;
+    }
+    if (token.startsWith('u_')) {
+      return base64UrlDecode(token.slice(2));
+    }
+    if (token.startsWith('p_')) {
+      return base64UrlDecode(token.slice(2));
+    }
+    return '';
+  }
+
   function formatMs(ms) {
     const safe = Math.max(0, Number(ms) || 0);
     const totalSeconds = Math.floor(safe / 1000);
@@ -161,14 +196,30 @@
   }
 
   function extractPostIdFromFileName(name) {
-    const raw = String(name || '').trim();
-    if (!raw) return '';
-    const generatedMatch = raw.match(/generated-([0-9a-fA-F-]{32,36})-/);
-    if (generatedMatch && generatedMatch[1]) {
-      return generatedMatch[1];
+    const pending = [String(name || '').trim()];
+    const visited = new Set();
+    while (pending.length) {
+      const raw = pending.shift();
+      if (!raw || visited.has(raw)) continue;
+      visited.add(raw);
+      const generatedMatch = raw.match(/generated-([0-9a-fA-F-]{32,36})-/);
+      if (generatedMatch && generatedMatch[1]) {
+        return generatedMatch[1];
+      }
+      const allMatches = raw.match(/[0-9a-fA-F-]{32,36}/g);
+      if (allMatches && allMatches.length) {
+        return allMatches[allMatches.length - 1];
+      }
+      const decoded = decodeAssetSource(raw);
+      if (decoded && !visited.has(decoded)) {
+        pending.push(decoded);
+      }
+      const base = basename(raw);
+      if (base && !visited.has(base)) {
+        pending.push(base);
+      }
     }
-    const allMatches = raw.match(/[0-9a-fA-F-]{32,36}/g);
-    return allMatches && allMatches.length ? allMatches[allMatches.length - 1] : '';
+    return '';
   }
 
   function setStatus(state, text) {
@@ -385,8 +436,10 @@
     const link = item.querySelector('.video-item-link');
     const safeUrl = url || '';
     const opts = options || {};
-    const postId = extractPostIdFromFileName(safeUrl || opts.name || '');
-    const rootAttachmentId = String(opts.rootAttachmentId ?? item.dataset.rootAttachmentId ?? '').trim();
+    const parsedPostId = extractPostIdFromFileName(safeUrl || opts.name || '');
+    const fallbackPostId = String(opts.extendPostId ?? item.dataset.postId ?? '').trim();
+    const postId = parsedPostId || fallbackPostId;
+    const rootAttachmentId = String(opts.rootAttachmentId ?? item.dataset.rootAttachmentId ?? postId ?? '').trim();
     item.dataset.url = safeUrl;
     item.dataset.name = String(opts.name || item.dataset.name || basename(safeUrl));
     if (postId) {
@@ -446,8 +499,12 @@
   }
 
   function clearFileSelection() {
+    const previousFileName = selectedFile && selectedFile.name ? selectedFile.name : '';
     selectedFile = null;
     referenceUploadCache.reset();
+    if (imageUrlInput && imageUrlInput.value.trim() === previousFileName) {
+      imageUrlInput.value = '';
+    }
     if (imageFileInput) {
       imageFileInput.value = '';
     }
@@ -598,7 +655,9 @@
 
   async function resolveReferenceImage(authHeader) {
     const rawUrl = imageUrlInput ? imageUrlInput.value.trim() : '';
-    if (selectedFile && rawUrl) {
+    const fileName = selectedFile && selectedFile.name ? selectedFile.name.trim() : '';
+    const manualUrl = selectedFile && rawUrl === fileName ? '' : rawUrl;
+    if (selectedFile && manualUrl) {
       toast(t('video.referenceConflict'), 'error');
       throw new Error('invalid_reference');
     }
@@ -606,7 +665,7 @@
       return referenceUploadCache.getOrUpload(selectedFile, (file) => uploadReferenceImage(authHeader, file));
     }
     referenceUploadCache.reset();
-    return rawUrl || '';
+    return manualUrl || '';
   }
 
   async function createVideoTask(authHeader, payload) {
@@ -662,9 +721,11 @@
     const html = items.map((item, idx) => {
       const name = String(item.name || '');
       const url = String(item.view_url || '');
+      const postId = String(item.post_id || '');
+      const rootAttachmentId = String(item.root_attachment_id || postId);
       const size = formatBytes(item.size_bytes);
       const mtime = formatMtime(item.mtime_ms);
-      return `<div class="cache-video-item" data-url="${escapeHtml(url)}" data-name="${escapeHtml(name)}">
+      return `<div class="cache-video-item" data-url="${escapeHtml(url)}" data-name="${escapeHtml(name)}" data-post-id="${escapeHtml(postId)}" data-root-attachment-id="${escapeHtml(rootAttachmentId)}">
         <div class="cache-video-thumb-wrap">
           <video class="cache-video-thumb" src="${escapeHtml(url)}" preload="metadata" muted playsinline></video>
         </div>
@@ -678,16 +739,17 @@
     cacheVideoList.innerHTML = html;
   }
 
-  function useCachedVideo(url, name) {
+  function useCachedVideo(url, name, postIdValue, rootAttachmentValue) {
     const safeUrl = String(url || '').trim();
     if (!safeUrl) return;
-    const postId = extractPostIdFromFileName(String(name || '')) || extractPostIdFromFileName(safeUrl);
+    const postId = String(postIdValue || '').trim() || extractPostIdFromFileName(String(name || '')) || extractPostIdFromFileName(safeUrl);
+    const rootAttachmentId = String(rootAttachmentValue || '').trim() || postId;
     selectedVideoItemId = `cache-${Date.now()}`;
     refreshVideoSelectionUi();
     applyWorkspaceVideo(safeUrl, {
       name,
       extendPostId: postId,
-      rootAttachmentId: postId || '',
+      rootAttachmentId,
       label: basename(name) || basename(safeUrl)
     });
     closeCacheVideoModal();
@@ -845,12 +907,14 @@
       if (info) {
         if (info.html) {
           renderVideoFromHtml(info.html, {
+            extendPostId: currentExtendPostId,
             rootAttachmentId: currentRunKind === 'splice'
               ? (originalFileAttachmentId || currentExtendPostId)
               : undefined
           });
         } else if (info.url) {
           renderVideoFromUrl(info.url, {
+            extendPostId: currentExtendPostId,
             rootAttachmentId: currentRunKind === 'splice'
               ? (originalFileAttachmentId || currentExtendPostId)
               : undefined
@@ -1204,12 +1268,56 @@
         toast('请先停止当前任务，再清空工作区。', 'warning');
         return;
       }
-      resetOutput();
+      closeSource();
+      currentTaskId = '';
+      currentRunKind = 'generate';
+      startAt = 0;
+      progressBuffer = '';
+      contentBuffer = '';
+      collectingContent = false;
+      currentPreviewItem = null;
+      updateProgress(0);
+      setIndeterminate(false);
+      /*
+      if (durationValue) {
+        durationValue.textContent = tSafe('video.elapsedTimeNone', '鑰楁椂 -');
+      }
+      setStatus('', tSafe('common.notConnected', '鏈繛鎺?));
+      */
+      if (durationValue) {
+        durationValue.textContent = tSafe('video.elapsedTimeNone', 'Elapsed -');
+      }
+      setStatus('', tSafe('common.notConnected', 'Not connected'));
       resetWorkspaceVideo();
       revokeWorkVideoObjectUrl();
       if (workVideoFileInput) {
         workVideoFileInput.value = '';
       }
+    });
+  }
+
+  if (clearHistoryBtn) {
+    clearHistoryBtn.addEventListener('click', () => {
+      if (isRunning) {
+        /*
+        toast('璇峰厛鍋滄褰撳墠浠诲姟锛屽啀娓呯┖鍘嗗彶瑙嗛銆?, 'warning');
+        */
+        toast('Stop the current task before clearing history.', 'warning');
+        return;
+      }
+      currentPreviewItem = null;
+      previewCount = 0;
+      generatedCount = 0;
+      extendedCount = 0;
+      if (videoStage) {
+        videoStage.innerHTML = '';
+        videoStage.classList.add('hidden');
+      }
+      if (videoEmpty) {
+        videoEmpty.classList.remove('hidden');
+      }
+      updateHistoryCount();
+      refreshVideoSelectionUi();
     });
   }
 
@@ -1248,7 +1356,12 @@
       if (!(target instanceof HTMLElement)) return;
       const row = target.closest('.cache-video-item');
       if (!row) return;
-      useCachedVideo(row.getAttribute('data-url') || '', row.getAttribute('data-name') || '');
+      useCachedVideo(
+        row.getAttribute('data-url') || '',
+        row.getAttribute('data-name') || '',
+        row.getAttribute('data-post-id') || '',
+        row.getAttribute('data-root-attachment-id') || '',
+      );
     });
   }
 
@@ -1329,6 +1442,9 @@
       selectedFile = file;
       if (!referenceUploadCache.peek(file)) {
         referenceUploadCache.reset();
+      }
+      if (imageUrlInput) {
+        imageUrlInput.value = file.name;
       }
       if (imageFileName) {
         imageFileName.textContent = file.name;

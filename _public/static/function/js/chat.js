@@ -48,7 +48,6 @@
   let modelChipHome = null;
   let fileBadgeHome = null;
   const mobileQuery = window.matchMedia ? window.matchMedia('(max-width: 720px)') : null;
-  const feedbackUrl = 'https://github.com/chenyme/grok2api/issues/new';
   const CHAT_COMPLETIONS_ENDPOINT = '/v1/function/chat/completions';
   const DEFAULT_SESSION_TITLES = ['新会话', 'New Session'];
 
@@ -1540,14 +1539,10 @@
     const retryBtn = createActionButton(t('common.retry'), t('chat.retryTitle'), () => retryLast());
     const editBtn = createActionButton(t('chat.editAnswer'), t('chat.editAnswerTitle'), () => editMessageByRow(entry.row));
     const copyBtn = createActionButton(t('chat.copyAnswer'), t('chat.copyAnswerTitle'), () => copyToClipboard(entry.raw || ''));
-    const feedbackBtn = createActionButton(t('chat.feedback'), t('chat.feedbackTitle'), () => {
-      window.open(feedbackUrl, '_blank', 'noopener');
-    });
 
     actions.appendChild(retryBtn);
     actions.appendChild(editBtn);
     actions.appendChild(copyBtn);
-    actions.appendChild(feedbackBtn);
     entry.row.appendChild(actions);
   }
 

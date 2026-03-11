@@ -11,8 +11,8 @@ test("cloudflare connected builds deploy without remote D1 migrations", async ()
     scripts?: Record<string, string>;
   };
 
-  assert.equal(packageJson.scripts?.deploy, "wrangler deploy");
-  assert.equal(packageJson.scripts?.["deploy:local"], "npm run build && npm run deploy");
+  assert.equal(packageJson.scripts?.deploy, "npm run sync-assets && wrangler deploy");
+  assert.equal(packageJson.scripts?.["deploy:local"], "npm run build && wrangler deploy");
   assert.match(packageJson.scripts?.build ?? "", /sync-assets/);
   assert.doesNotMatch(packageJson.scripts?.deploy ?? "", /migrations apply/i);
 });
