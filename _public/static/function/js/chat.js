@@ -860,9 +860,8 @@
     const parts = parseThinkSections(raw);
     return parts.map((part) => {
       if (part.type === 'think') {
-        const body = renderThinkContent(part.value.trim(), part.open);
-        const openAttr = part.open ? ' open' : '';
-        return `<details class="think-block" data-think="true"${openAttr}><summary class="think-summary">${t('chat.thinkLabel')}</summary><div class="think-content">${body || '<em>' + t('chat.empty') + '</em>'}</div></details>`;
+        const body = renderThinkContent(part.value.trim(), false);
+        return `<details class="think-block" data-think="true"><summary class="think-summary">${t('chat.thinkLabel')}</summary><div class="think-content">${body || '<em>' + t('chat.empty') + '</em>'}</div></details>`;
       }
       return renderBasicMarkdown(part.value);
     }).join('');
@@ -1247,7 +1246,7 @@
       entry.hasThink = true;
     }
     let savedThinkStates = null;
-    if (entry.hasThink && entry.thinkAutoCollapsed) {
+    if (entry.hasThink) {
       const blocks = entry.contentNode.querySelectorAll('.think-block[data-think="true"]');
       if (blocks.length) {
         savedThinkStates = Array.from(blocks).map(b => b.hasAttribute('open'));
@@ -1273,11 +1272,8 @@
           } else {
             block.removeAttribute('open');
           }
-        } else if (entry.thinkElapsed === null || entry.thinkElapsed === undefined) {
-          block.setAttribute('open', '');
-        } else if (!entry.thinkAutoCollapsed) {
+        } else {
           block.removeAttribute('open');
-          entry.thinkAutoCollapsed = true;
         }
       });
     }
