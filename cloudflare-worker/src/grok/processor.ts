@@ -192,6 +192,47 @@ function replaceRenderCardsWithMarkdown(content: string, cardAttachmentsJson: un
   );
 }
 
+function stripThinkMarkup(content: string): string {
+  return String(content ?? "").replace(/<\/?think>/g, "");
+}
+
+function findFlexiblePrefixEnd(finalMessage: string, streamedText: string): number {
+  if (!streamedText) return 0;
+
+  let finalIndex = 0;
+  let streamedIndex = 0;
+  while (finalIndex < finalMessage.length && streamedIndex < streamedText.length) {
+    const finalChar = finalMessage[finalIndex];
+    const streamedChar = streamedText[streamedIndex];
+    if (finalChar === streamedChar) {
+      finalIndex += 1;
+      streamedIndex += 1;
+      continue;
+    }
+    if (/\s/.test(finalChar) && /\s/.test(streamedChar)) {
+      while (finalIndex < finalMessage.length && /\s/.test(finalMessage[finalIndex])) finalIndex += 1;
+      while (streamedIndex < streamedText.length && /\s/.test(streamedText[streamedIndex])) streamedIndex += 1;
+      continue;
+    }
+    return -1;
+  }
+  return streamedIndex === streamedText.length ? finalIndex : -1;
+}
+
+function buildFinalMessageSuffix(finalMessage: string, streamedAnswerText: string): string {
+  if (!streamedAnswerText) return finalMessage;
+  if (finalMessage.startsWith(streamedAnswerText)) {
+    return finalMessage.slice(streamedAnswerText.length);
+  }
+
+  const overlapEnd = findFlexiblePrefixEnd(finalMessage, stripThinkMarkup(streamedAnswerText));
+  if (overlapEnd >= 0) {
+    return finalMessage.slice(overlapEnd);
+  }
+
+  return finalMessage;
+}
+
 export function createOpenAiStreamFromGrokNdjson(
   grokResp: Response,
   opts: {
@@ -422,12 +463,7 @@ export function createOpenAiStreamFromGrokNdjson(
 
             if (modelResp && !isImage && typeof modelResp.message === "string" && modelResp.message) {
               let finalMessage = replaceRenderCardsWithMarkdown(modelResp.message, modelResp.cardAttachmentsJson);
-              let messageSuffix = finalMessage;
-              if (streamedAnswerText) {
-                messageSuffix = finalMessage.startsWith(streamedAnswerText)
-                  ? finalMessage.slice(streamedAnswerText.length)
-                  : "";
-              }
+              let messageSuffix = buildFinalMessageSuffix(finalMessage, streamedAnswerText);
 
               let emitted = "";
               if (isThinking && showThinking) {
@@ -492,7 +528,7 @@ export function createOpenAiStreamFromGrokNdjson(
             }
 
             if (!shouldSkip) controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, content)));
-            if (!shouldSkip && !currentIsThinking) streamedAnswerText += content;
+            if (!shouldSkip && !currentIsThinking) streamedAnswerText += stripThinkMarkup(content);
             isThinking = currentIsThinking;
           }
         }

@@ -1,8 +1,8 @@
 (() => {
+  const composerMeta = document.getElementById('composerMeta');
   const modelChip = document.getElementById('modelChip');
   const modelLabel = document.getElementById('modelLabel');
   const modelDropdown = document.getElementById('modelDropdown');
-  const composerMeta = document.getElementById('composerMeta');
   let modelValue = 'grok-4.20-beta';
   let modelList = [];
   const tempRange = document.getElementById('tempRange');
@@ -29,6 +29,10 @@
   const collapseSidebarBtn = document.getElementById('collapseSidebarBtn');
   const sidebarExpandBtn = document.getElementById('sidebarExpandBtn');
   const sessionListEl = document.getElementById('sessionList');
+  const chatImageLightbox = document.getElementById('chatImageLightbox');
+  const chatImageLightboxImg = document.getElementById('chatImageLightboxImg');
+  const chatImageLightboxCaption = document.getElementById('chatImageLightboxCaption');
+  const chatImageLightboxClose = document.getElementById('chatImageLightboxClose');
 
   const STORAGE_KEY = 'grok2api_chat_sessions';
   const SIDEBAR_STATE_KEY = 'grok2api_chat_sidebar_collapsed';
@@ -36,11 +40,13 @@
 
   let messageHistory = [];
   let isSending = false;
+  let sendPending = false;
   let abortController = null;
   let attachment = null;
   let attachmentLoading = null;
   let activeStreamInfo = null;
   let modelChipHome = null;
+  let fileBadgeHome = null;
   const mobileQuery = window.matchMedia ? window.matchMedia('(max-width: 720px)') : null;
   const feedbackUrl = 'https://github.com/chenyme/grok2api/issues/new';
   const CHAT_COMPLETIONS_ENDPOINT = '/v1/function/chat/completions';
@@ -198,12 +204,8 @@
       const displayContent = getMessageDisplay(msg);
       const editable = !msg.hasAttachment && typeof msg.content === 'string';
       const entry = createMessage(msg.role, displayContent, true, { editable });
-      if (!entry) continue;
-      if (msg.role === 'assistant') {
+      if (entry && msg.role === 'assistant') {
         updateMessage(entry, displayContent, true);
-      } else if (msg.role === 'user') {
-        const attachmentsList = Array.isArray(msg.attachments) ? msg.attachments : [];
-        renderUserMessage(entry, displayContent, attachmentsList);
       }
     }
     if (activeStreamInfo && activeStreamInfo.sessionId === session.id && activeStreamInfo.entry.row) {
@@ -518,7 +520,7 @@
         const safeAlt = escapeHtml(alt || 'image');
         if (!isSafeImageUrl(url)) return safeAlt;
         const safeUrl = escapeHtml(url || '');
-        return `<img src="${safeUrl}" alt="${safeAlt}" loading="lazy">`;
+        return `<img class="chat-media-image" data-chat-image="1" src="${safeUrl}" alt="${safeAlt}" loading="lazy" decoding="async">`;
       });
 
       output = output.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match, label, url) => {
@@ -531,7 +533,7 @@
       output = output.replace(/(data:image\/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=]+)/g, (match, uri) => {
         if (!isSafeImageUrl(uri)) return '';
         const safeUrl = escapeHtml(uri || '');
-        return `<img src="${safeUrl}" alt="image" loading="lazy">`;
+        return `<img class="chat-media-image" data-chat-image="1" src="${safeUrl}" alt="image" loading="lazy" decoding="async">`;
       });
 
       inlineCodes.forEach((html, i) => {
@@ -867,52 +869,48 @@
     }).join('');
   }
 
-  function closeChatImagePreview() {
-    const overlay = document.getElementById('chatImagePreviewOverlay');
-    if (!overlay) return;
-    overlay.remove();
+  function openChatImagePreview(src, name) {
+    if (!src || !chatImageLightbox || !chatImageLightboxImg) return;
+    chatImageLightboxImg.src = src;
+    chatImageLightboxImg.alt = name || 'image';
+    if (chatImageLightboxCaption) {
+      const caption = String(name || '').trim();
+      const showCaption = caption && caption.toLowerCase() !== 'image';
+      chatImageLightboxCaption.textContent = showCaption ? caption : '';
+      chatImageLightboxCaption.classList.toggle('hidden', !showCaption);
+    }
+    chatImageLightbox.classList.add('active');
+    chatImageLightbox.setAttribute('aria-hidden', 'false');
+    document.body.classList.add('chat-lightbox-open');
   }
 
-  function openChatImagePreview(src, name) {
-    if (!src) return;
-    const opened = document.getElementById('chatImagePreviewOverlay');
-    if (opened && opened.dataset.src === src) {
-      closeChatImagePreview();
-      return;
+  function closeChatImagePreview() {
+    if (!chatImageLightbox || !chatImageLightboxImg) return;
+    chatImageLightbox.classList.remove('active');
+    chatImageLightbox.setAttribute('aria-hidden', 'true');
+    chatImageLightboxImg.removeAttribute('src');
+    chatImageLightboxImg.alt = '';
+    if (chatImageLightboxCaption) {
+      chatImageLightboxCaption.textContent = '';
+      chatImageLightboxCaption.classList.add('hidden');
     }
-    closeChatImagePreview();
-    const overlay = document.createElement('div');
-    overlay.id = 'chatImagePreviewOverlay';
-    overlay.className = 'chat-image-preview-overlay';
-    overlay.dataset.src = src;
+    document.body.classList.remove('chat-lightbox-open');
+  }
 
-    const img = document.createElement('img');
-    img.className = 'chat-image-preview-image';
-    img.src = src;
-    img.alt = name || 'image';
-    img.addEventListener('click', (event) => event.stopPropagation());
-
-    overlay.appendChild(img);
-    overlay.addEventListener('click', () => closeChatImagePreview());
-    document.body.appendChild(overlay);
+  function decorateRenderedImages(root) {
+    if (!root || !root.querySelectorAll) return;
+    const images = root.querySelectorAll('img');
+    images.forEach((img) => {
+      img.classList.add('chat-media-image');
+      img.dataset.chatImage = '1';
+      img.setAttribute('loading', 'lazy');
+      img.setAttribute('decoding', 'async');
+    });
   }
 
   function bindMessageImagePreview(root) {
     if (!root || !root.querySelectorAll) return;
-    const userImageButtons = root.querySelectorAll('.user-image-btn');
-    userImageButtons.forEach((btn) => {
-      if (btn.dataset.previewBound === '1') return;
-      btn.dataset.previewBound = '1';
-      btn.addEventListener('click', (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        const src = btn.dataset.previewSrc || '';
-        const name = btn.dataset.previewName || 'image';
-        openChatImagePreview(src, name);
-      });
-    });
-
-    const images = root.querySelectorAll('img');
+    const images = root.querySelectorAll('img[data-chat-image="1"]');
     images.forEach((img) => {
       if (img.dataset.previewBound === '1') return;
       img.dataset.previewBound = '1';
@@ -925,43 +923,6 @@
         openChatImagePreview(src, name);
       });
     });
-  }
-
-  function renderUserMessage(entry, text, files) {
-    if (!entry || !entry.contentNode) return;
-    const prompt = String(text || '').trim();
-    const attachmentsList = Array.isArray(files) ? files : [];
-    const imageFiles = attachmentsList.filter((item) => String(item.mime || item.type || '').startsWith('image/') && item.data);
-    const otherFiles = attachmentsList.filter((item) => !(String(item.mime || item.type || '').startsWith('image/')));
-
-    const parts = [];
-    if (prompt) {
-      parts.push(`<div class="user-text-bubble">${renderBasicMarkdown(prompt)}</div>`);
-    }
-    if (imageFiles.length) {
-      const thumbs = imageFiles.map((item) => {
-        const src = escapeHtml(item.data || '');
-        const name = escapeHtml(item.name || 'image');
-        return `<button type="button" class="user-image-btn" data-preview-src="${src}" data-preview-name="${name}" aria-label="${name}"><img src="${src}" alt="${name}" loading="lazy"></button>`;
-      }).join('');
-      parts.push(`<div class="user-media-row">${thumbs}</div>`);
-    }
-    if (otherFiles.length) {
-      const label = escapeHtml(t('chat.fileLabel'));
-      const tags = otherFiles.map((item) => `<span class="user-file-chip">${label} ${escapeHtml(item.name || 'file')}</span>`).join('');
-      parts.push(`<div class="user-file-row">${tags}</div>`);
-    }
-    if (!parts.length) {
-      parts.push(`<div class="user-text-bubble">${escapeHtml(t('chat.empty'))}</div>`);
-    }
-
-    entry.raw = prompt;
-    entry.contentNode.classList.add('rendered', 'user-rendered');
-    entry.contentNode.innerHTML = parts.join('');
-    applyImageGrid(entry.contentNode);
-    enhanceBrokenImages(entry.contentNode);
-    bindMessageImagePreview(entry.contentNode);
-    scrollToBottom();
   }
 
   function deleteMessageByRow(row) {
@@ -1040,7 +1001,7 @@
         contentNode.classList.add('rendered');
         setRenderedHTML(contentNode, renderMarkdown(newText));
       } else {
-        renderUserMessage({ contentNode }, newText, []);
+        contentNode.textContent = newText;
       }
       finish();
       const session = getActiveSession();
@@ -1323,6 +1284,7 @@
     }
     if (entry.role === 'assistant') {
       applyImageGrid(entry.contentNode);
+      decorateRenderedImages(entry.contentNode);
       const thinkNodes = entry.contentNode.querySelectorAll('.think-content');
       thinkNodes.forEach((node) => {
         node.scrollTop = node.scrollHeight;
@@ -1451,16 +1413,26 @@
     modelChip.classList.toggle('open', !visible);
   }
 
-  function syncModelChipPosition() {
-    if (!modelChip || !composerMeta) return;
+  function syncComposerMetaPosition() {
+    if (!composerMeta) return;
     const isMobile = mobileQuery ? mobileQuery.matches : window.innerWidth <= 720;
     if (isMobile) {
-      if (modelChip.parentElement !== composerMeta) {
+      if (fileBadge && fileBadge.parentElement !== composerMeta) {
+        composerMeta.appendChild(fileBadge);
+      }
+      if (modelChip && modelChip.parentElement !== composerMeta) {
         composerMeta.appendChild(modelChip);
       }
       return;
     }
-    if (modelChipHome && modelChip.parentElement !== modelChipHome) {
+    if (fileBadge && fileBadgeHome && fileBadge.parentElement !== fileBadgeHome) {
+      if (promptInput && promptInput.parentElement === fileBadgeHome) {
+        fileBadgeHome.insertBefore(fileBadge, promptInput);
+      } else {
+        fileBadgeHome.appendChild(fileBadge);
+      }
+    }
+    if (modelChip && modelChipHome && modelChip.parentElement !== modelChipHome) {
       modelChipHome.insertBefore(modelChip, modelChipHome.firstChild);
     }
   }
@@ -1660,118 +1632,117 @@
   }
 
   async function sendMessage() {
-    if (isSending) return;
-    if (attachmentLoading) {
-      try {
-        await attachmentLoading;
-      } catch (e) {
+    if (isSending || sendPending) return;
+    sendPending = true;
+    try {
+      if (attachmentLoading) {
+        try {
+          await attachmentLoading;
+        } catch (e) {
+          return;
+        }
+      }
+      const prompt = promptInput ? promptInput.value.trim() : '';
+      if (!prompt && !attachment) {
+        toast(t('common.enterContent'), 'error');
         return;
       }
-    }
-    const prompt = promptInput ? promptInput.value.trim() : '';
-    if (!prompt && !attachment) {
-      toast(t('common.enterContent'), 'error');
-      return;
-    }
 
-    let displayText = prompt || '';
-    if (attachment) {
-      const label = attachment.name ? `${t('chat.fileLabel')} ${attachment.name}` : t('chat.fileLabel');
-      displayText = displayText ? `${displayText}\n${label}` : label;
-    }
-
-    const attachmentsSnapshot = attachment
-      ? [{ name: attachment.name || 'file', mime: attachment.type || '', data: attachment.data }]
-      : [];
-    const userEntry = createMessage('user', '', false, { editable: !attachment });
-    if (userEntry) {
-      renderUserMessage(userEntry, prompt, attachmentsSnapshot);
-    }
-
-    let content = prompt;
-    if (attachment) {
-      const blocks = [];
-      if (prompt) {
-        blocks.push({ type: 'text', text: prompt });
-      }
-      blocks.push({
-        type: 'file',
-        file: {
-          file_data: attachment.data,
-          mime_type: attachment.type || '',
-          filename: attachment.name || 'file'
-        }
-      });
-      content = blocks;
-    }
-
-    messageHistory.push({
-      role: 'user',
-      content,
-      display: displayText,
-      hasAttachment: !!attachment,
-      attachmentName: attachment ? attachment.name : ''
-    });
-    trimMessageHistory();
-    if (promptInput) promptInput.value = '';
-    clearAttachment();
-    syncCurrentSession();
-    syncSessionModel();
-    updateSessionTitle(getActiveSession());
-    saveSessions();
-    renderSessionList();
-
-    const sendSessionId = sessionsData.activeId;
-    const assistantEntry = createMessage('assistant', '');
-    setSendingState(true);
-    setStatus('connecting', t('common.sending'));
-
-    abortController = new AbortController();
-    const payload = buildPayload();
-
-    let headers = { 'Content-Type': 'application/json' };
-    try {
-      const authHeader = await ensureFunctionKey();
-      headers = { ...headers, ...buildAuthHeaders(authHeader) };
-    } catch (e) {
-      // ignore auth helper failures
-    }
-
-    try {
-      const res = await fetch(CHAT_COMPLETIONS_ENDPOINT, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(payload),
-        signal: abortController.signal
-      });
-
-      if (!res.ok) {
-        throw new Error(t('chat.requestFailedStatus', { status: res.status }));
+      let displayText = prompt || '';
+      if (attachment) {
+        const label = attachment.name ? `${t('chat.fileLabel')} ${attachment.name}` : t('chat.fileLabel');
+        displayText = displayText ? `${displayText}\n${label}` : label;
       }
 
-      await handleStream(res, assistantEntry, sendSessionId);
-      setStatus('connected', t('common.done'));
-    } catch (e) {
-      if (e && e.name === 'AbortError') {
-        updateMessage(assistantEntry, assistantEntry.raw || t('common.stopped'), true);
-        if (assistantEntry.hasThink) {
-          const elapsed = assistantEntry.thinkElapsed || Math.max(1, Math.round((Date.now() - assistantEntry.startedAt) / 1000));
-          updateThinkSummary(assistantEntry, elapsed);
+      createMessage('user', displayText, false, { editable: !attachment });
+
+      let content = prompt;
+      if (attachment) {
+        const blocks = [];
+        if (prompt) {
+          blocks.push({ type: 'text', text: prompt });
         }
-        setStatus('error', t('common.stopped'));
-        if (!assistantEntry.committed) {
-          assistantEntry.committed = true;
-          commitToSession(sendSessionId, assistantEntry.raw || '');
+        blocks.push({
+          type: 'file',
+          file: {
+            file_data: attachment.data,
+            mime_type: attachment.type || '',
+            filename: attachment.name || 'file'
+          }
+        });
+        content = blocks;
+      }
+
+      messageHistory.push({
+        role: 'user',
+        content,
+        display: displayText,
+        hasAttachment: !!attachment,
+        attachmentName: attachment ? attachment.name : ''
+      });
+      trimMessageHistory();
+      if (promptInput) promptInput.value = '';
+      clearAttachment();
+      syncCurrentSession();
+      syncSessionModel();
+      updateSessionTitle(getActiveSession());
+      saveSessions();
+      renderSessionList();
+
+      const sendSessionId = sessionsData.activeId;
+      const assistantEntry = createMessage('assistant', '');
+      setSendingState(true);
+      setStatus('connecting', t('common.sending'));
+
+      abortController = new AbortController();
+      const payload = buildPayload();
+
+      let headers = { 'Content-Type': 'application/json' };
+      try {
+        const authHeader = await ensureFunctionKey();
+        headers = { ...headers, ...buildAuthHeaders(authHeader) };
+      } catch (e) {
+        // ignore auth helper failures
+      }
+
+      try {
+        const res = await fetch(CHAT_COMPLETIONS_ENDPOINT, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(payload),
+          signal: abortController.signal
+        });
+
+        if (!res.ok) {
+          throw new Error(t('chat.requestFailedStatus', { status: res.status }));
         }
-      } else {
-        updateMessage(assistantEntry, t('chat.requestFailedStatus', { status: e.message || e }), true);
-        setStatus('error', t('common.failed'));
-        toast(t('chat.requestFailedCheck'), 'error');
+
+        await handleStream(res, assistantEntry, sendSessionId);
+        setStatus('connected', t('common.done'));
+      } catch (e) {
+        if (e && e.name === 'AbortError') {
+          updateMessage(assistantEntry, assistantEntry.raw || t('common.stopped'), true);
+          if (assistantEntry.hasThink) {
+            const elapsed = assistantEntry.thinkElapsed || Math.max(1, Math.round((Date.now() - assistantEntry.startedAt) / 1000));
+            updateThinkSummary(assistantEntry, elapsed);
+          }
+          setStatus('error', t('common.stopped'));
+          if (!assistantEntry.committed) {
+            assistantEntry.committed = true;
+            commitToSession(sendSessionId, assistantEntry.raw || '');
+          }
+        } else {
+          updateMessage(assistantEntry, t('chat.requestFailedStatus', { status: e.message || e }), true);
+          setStatus('error', t('common.failed'));
+          toast(t('chat.requestFailedCheck'), 'error');
+        }
+      } finally {
+        setSendingState(false);
+        abortController = null;
+        scrollToBottom();
       }
     } finally {
-      setSendingState(false);
-      abortController = null;
-      scrollToBottom();
+      sendPending = false;
     }
   }
 
@@ -1895,13 +1866,14 @@
         toggleModelDropdown();
       });
     }
-    if (modelChip && composerMeta) {
-      if (!modelChipHome) modelChipHome = modelChip.parentElement;
-      syncModelChipPosition();
+    if (composerMeta) {
+      if (modelChip && !modelChipHome) modelChipHome = modelChip.parentElement;
+      if (fileBadge && !fileBadgeHome) fileBadgeHome = fileBadge.parentElement;
+      syncComposerMetaPosition();
       if (mobileQuery && mobileQuery.addEventListener) {
-        mobileQuery.addEventListener('change', syncModelChipPosition);
+        mobileQuery.addEventListener('change', syncComposerMetaPosition);
       } else {
-        window.addEventListener('resize', syncModelChipPosition);
+        window.addEventListener('resize', syncComposerMetaPosition);
       }
     }
     if (modelDropdown) {
@@ -1959,6 +1931,16 @@
     if (fileRemoveBtn) {
       fileRemoveBtn.addEventListener('click', clearAttachment);
     }
+    if (chatImageLightboxClose) {
+      chatImageLightboxClose.addEventListener('click', closeChatImagePreview);
+    }
+    if (chatImageLightbox) {
+      chatImageLightbox.addEventListener('click', (event) => {
+        if (event.target === chatImageLightbox) {
+          closeChatImagePreview();
+        }
+      });
+    }
     if (newChatBtn) {
       newChatBtn.addEventListener('click', createSession);
     }
@@ -1974,6 +1956,11 @@
     if (sidebarOverlay) {
       sidebarOverlay.addEventListener('click', closeSidebar);
     }
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && chatImageLightbox && chatImageLightbox.classList.contains('active')) {
+        closeChatImagePreview();
+      }
+    });
   }
 
   updateRangeValues();

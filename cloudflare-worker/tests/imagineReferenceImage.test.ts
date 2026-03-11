@@ -46,6 +46,7 @@ test("buildImagineEditFormData reuses uploaded reference images from KV without 
     assert.equal(file.name, "reference.png");
     assert.equal(file.type, "image/png");
     assert.equal(await file.text(), "demo-image");
+    assert.equal(form.get("size"), "1024x1024");
   } finally {
     globalThis.fetch = originalFetch;
   }

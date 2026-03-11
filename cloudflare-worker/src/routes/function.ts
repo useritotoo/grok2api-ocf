@@ -208,14 +208,14 @@ export function resolveImagineGenerationTarget(imageReference: unknown): {
   };
 }
 
-function buildImagineGenerationBody(payload: ImagineSessionPayload): Record<string, unknown> {
+export function buildImagineGenerationBody(payload: ImagineSessionPayload): Record<string, unknown> {
   return {
     model: resolveImagineGenerationTarget(payload.image_reference).model,
     prompt: payload.prompt,
     n: 6,
     stream: false,
     response_format: "url",
-    aspect_ratio: payload.aspect_ratio,
+    size: chooseImageSizeFromAspectRatio(payload.aspect_ratio),
     concurrency: 1,
   };
 }
@@ -298,6 +298,7 @@ export async function buildImagineEditFormData(
   form.set("prompt", payload.prompt);
   form.set("n", "6");
   form.set("response_format", "url");
+  form.set("size", chooseImageSizeFromAspectRatio(payload.aspect_ratio));
   form.append("image", file, file.name);
   return form;
 }

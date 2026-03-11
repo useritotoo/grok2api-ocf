@@ -49,6 +49,15 @@
   let streamSequence = 0;
   const streamImageMap = new Map();
   let finalMinBytesDefault = 100000;
+  const referenceUploadCache = (window.VideoReferenceCache && typeof VideoReferenceCache.createReferenceUploadCache === 'function')
+    ? VideoReferenceCache.createReferenceUploadCache()
+    : {
+        reset() {},
+        peek() { return ''; },
+        async getOrUpload(file, uploadFn) {
+          return uploadFn(file);
+        }
+      };
 
   function toast(message, type) {
     if (typeof showToast === 'function') {
@@ -226,6 +235,7 @@
 
   function clearReferenceSelection() {
     selectedReferenceFile = null;
+    referenceUploadCache.reset();
     currentReferenceUrl = imageUrlInput ? imageUrlInput.value.trim() : currentReferenceUrl;
     if (imageFileInput) {
       imageFileInput.value = '';
@@ -268,8 +278,9 @@
       throw new Error('invalid_reference');
     }
     if (selectedReferenceFile) {
-      return uploadReferenceImage(authHeader, selectedReferenceFile);
+      return referenceUploadCache.getOrUpload(selectedReferenceFile, (file) => uploadReferenceImage(authHeader, file));
     }
+    referenceUploadCache.reset();
     return rawUrl || '';
   }
 
@@ -956,6 +967,10 @@
         imageUrlInput.value = '';
       }
       selectedReferenceFile = file;
+      currentReferenceUrl = '';
+      if (!referenceUploadCache.peek(file)) {
+        referenceUploadCache.reset();
+      }
       if (imageFileName) {
         imageFileName.textContent = file.name;
       }
@@ -980,6 +995,10 @@
       currentReferenceUrl = imageUrlInput.value.trim();
       if (imageUrlInput.value.trim() && selectedReferenceFile) {
         clearReferenceSelection();
+        return;
+      }
+      if (imageUrlInput.value.trim()) {
+        referenceUploadCache.reset();
       }
     });
   }
