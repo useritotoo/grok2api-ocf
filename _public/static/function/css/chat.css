@@ -961,6 +961,10 @@ body.chat-lightbox-open {
     display: flex;
   }
 
+  .composer-meta .file-badge {
+    max-width: min(220px, 68vw);
+  }
+
   .composer-input {
     align-items: flex-start;
   }
@@ -1122,10 +1126,6 @@ body.chat-lightbox-open {
   display: none;
 }
 
-.mobile-session-bar {
-  display: none;
-}
-
 .sidebar-toggle {
   display: none;
   width: 30px;
@@ -1137,11 +1137,6 @@ body.chat-lightbox-open {
   align-items: center;
   justify-content: center;
   cursor: pointer;
-}
-
-.sidebar-toggle-label {
-  display: none;
-  white-space: nowrap;
 }
 
 .sidebar-expand-btn {
@@ -1272,13 +1267,22 @@ body.chat-lightbox-open {
 }
 
 @media (max-width: 1024px) {
+  #app-footer,
+  #app-footer .app-footer {
+    display: none;
+  }
+
+  .chat-title {
+    padding-left: 52px;
+  }
+
   .chat-layout {
     position: relative;
   }
 
   .chat-sidebar {
     position: fixed;
-    top: calc(64px + env(safe-area-inset-top, 0px) + 56px);
+    top: 68px;
     left: 50%;
     width: min(92vw, 420px);
     height: auto;
@@ -1317,40 +1321,21 @@ body.chat-lightbox-open {
     pointer-events: auto;
   }
 
-  .mobile-session-bar {
-    display: flex;
-    position: fixed;
-    top: calc(64px + env(safe-area-inset-top, 0px) + 10px);
-    left: 16px;
-    right: 16px;
-    z-index: 60;
-    pointer-events: none;
-  }
-
   .sidebar-toggle {
     display: inline-flex;
-    position: static;
-    pointer-events: auto;
-    width: auto;
-    min-width: 0;
+    position: fixed;
+    top: calc(56px + 12px);
+    left: 16px;
+    width: 40px;
     height: 40px;
     border-radius: 999px;
-    padding: 0 14px;
-    gap: 8px;
     box-shadow: 0 16px 32px rgba(15, 15, 15, 0.14);
-    backdrop-filter: blur(14px);
-  }
-
-  .sidebar-toggle-label {
-    display: inline;
-    font-size: 12px;
-    font-weight: 600;
+    z-index: 60;
   }
 
   .chat-shell {
     border-left: none;
     padding-left: 0;
-    padding-top: 54px;
   }
 
   .sidebar-header {
