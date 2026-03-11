@@ -5,10 +5,10 @@
   "scripts": {
     "build": "npm run sync-assets && npm run typecheck",
     "dev": "npm run sync-assets && wrangler dev",
-    "deploy": "wrangler deploy",
-    "deploy:local": "npm run build && npm run deploy",
-    "deploy:upload": "wrangler versions upload",
-    "deploy:upload:local": "npm run build && npm run deploy:upload",
+    "deploy": "npm run sync-assets && wrangler deploy",
+    "deploy:local": "npm run build && wrangler deploy",
+    "deploy:upload": "npm run sync-assets && wrangler versions upload",
+    "deploy:upload:local": "npm run build && wrangler versions upload",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --test --import tsx",
     "sync-assets": "node ./scripts/sync-assets.mjs"
