@@ -9,7 +9,7 @@
   const clearImageFileBtn = document.getElementById('clearImageFileBtn');
   const selectImageFileBtn = document.getElementById('selectImageFileBtn');
   const ratioSelect = document.getElementById('ratioSelect');
-  const concurrentSelect = document.getElementById('concurrentSelect');
+  const nSelect = document.getElementById('nSelect');
   const autoScrollToggle = document.getElementById('autoScrollToggle');
   const autoDownloadToggle = document.getElementById('autoDownloadToggle');
   const reverseInsertToggle = document.getElementById('reverseInsertToggle');
@@ -35,6 +35,7 @@
   let latencyCount = 0;
   let lastRunId = '';
   let isRunning = false;
+  let isStopping = false;
   let connectionMode = 'ws';
   let modePreference = 'auto';
   const MODE_STORAGE_KEY = 'imagine_mode';
@@ -290,13 +291,14 @@
     return manualUrl || '';
   }
 
-  async function createImagineTask(prompt, ratio, authHeader, nsfwEnabled, referenceUrl) {
+  async function createImagineTask(prompt, ratio, authHeader, nsfwEnabled, referenceUrl, n) {
     const payload = (window.FunctionPayloads && typeof FunctionPayloads.buildImagineStartPayload === 'function')
       ? FunctionPayloads.buildImagineStartPayload({
           prompt,
           aspectRatio: ratio,
           nsfw: nsfwEnabled,
-          referenceUrl
+          referenceUrl,
+          n
         })
       : {
           prompt,
@@ -320,16 +322,12 @@
     return data && data.task_id ? String(data.task_id) : '';
   }
 
-  async function createImagineTasks(prompt, ratio, concurrent, authHeader, nsfwEnabled, referenceUrl) {
-    const tasks = [];
-    for (let i = 0; i < concurrent; i++) {
-      const taskId = await createImagineTask(prompt, ratio, authHeader, nsfwEnabled, referenceUrl);
-      if (!taskId) {
-        throw new Error('Missing task id');
-      }
-      tasks.push(taskId);
+  async function createImagineTasks(prompt, ratio, n, authHeader, nsfwEnabled, referenceUrl) {
+    const taskId = await createImagineTask(prompt, ratio, authHeader, nsfwEnabled, referenceUrl, n);
+    if (!taskId) {
+      throw new Error('Missing task id');
     }
-    return tasks;
+    return [taskId];
   }
 
   async function stopImagineTasks(taskIds, authHeader) {
@@ -762,7 +760,7 @@
     }
     const rawPublicKey = normalizeAuthHeader(authHeader);
 
-    const concurrent = concurrentSelect ? parseInt(concurrentSelect.value, 10) : 1;
+    const n = nSelect ? (parseInt(nSelect.value, 10) || 4) : 4;
     const ratio = ratioSelect ? ratioSelect.value : '2:3';
     const nsfwEnabled = nsfwSelect ? nsfwSelect.value === 'true' : true;
     
@@ -785,7 +783,7 @@
     try {
       referenceUrl = await resolveReferenceImage(authHeader);
       currentReferenceUrl = referenceUrl;
-      taskIds = await createImagineTasks(prompt, ratio, concurrent, authHeader, nsfwEnabled, referenceUrl);
+      taskIds = await createImagineTasks(prompt, ratio, n, authHeader, nsfwEnabled, referenceUrl);
     } catch (e) {
       setStatus('error', t('common.createTaskFailed'));
       startBtn.disabled = false;
@@ -902,24 +900,43 @@
   }
 
   async function stopConnection() {
+    if (isStopping) return;
+    isStopping = true;
+
     if (pendingFallbackTimer) {
       clearTimeout(pendingFallbackTimer);
       pendingFallbackTimer = null;
     }
 
+    // 向后端发送停止信号，不立即断开连接
+    // 等待所有正在生成的图片通过 onmessage 自然完成
     const authHeader = await ensureFunctionKey();
     if (authHeader !== null && currentTaskIds.length > 0) {
-      await stopImagineTasks(currentTaskIds, authHeader);
+      stopImagineTasks(currentTaskIds, authHeader).catch(() => {});
     }
 
-    stopAllConnections();
-    currentTaskIds = [];
-    currentReferenceUrl = '';
-    isRunning = false;
-    updateActive();
-    updateModeValue();
+    // 立即更新 UI 状态，屏蔽后续新消息触发任何新建动作
+    setStatus('', t('common.stopped'));
     setButtons(false);
-    setStatus('', t('common.notConnected'));
+
+    // 将仍处于 running 的卡片标记为 stopped，避免永久卡圈
+    streamImageMap.forEach((item) => {
+      const statusEl = item && item.querySelector('.image-status');
+      if (statusEl && statusEl.classList.contains('running')) {
+        setImageStatus(item, 'error', t('common.stopped'));
+      }
+    });
+
+    // 稍作等待后再断开连接，给最后几帧数据留出到达时间
+    setTimeout(() => {
+      stopAllConnections();
+      currentTaskIds = [];
+      currentReferenceUrl = '';
+      isRunning = false;
+      isStopping = false;
+      updateActive();
+      updateModeValue();
+    }, 1500);
   }
 
   function clearImages() {
