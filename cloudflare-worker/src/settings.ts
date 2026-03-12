@@ -107,7 +107,7 @@ const DEFAULTS: SettingsBundle = {
     stream_chunk_timeout: 120,
     stream_total_timeout: 600,
     retry_status_codes: [401, 429, 403],
-    image_generation_method: "legacy",
+    image_generation_method: "imagine_ws_experimental",
   },
   token: {
     auto_refresh: true,

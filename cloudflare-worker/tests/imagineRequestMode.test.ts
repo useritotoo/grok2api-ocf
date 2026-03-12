@@ -33,7 +33,7 @@ test("maps imagine aspect ratios to upstream image sizes for generation requests
       prompt: "A neon skyline",
       n: 6,
       stream: false,
-      response_format: "url",
+      response_format: "b64_json",
       size: "1280x720",
       concurrency: 1,
     },

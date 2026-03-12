@@ -21,6 +21,13 @@ export interface TokenRow {
 }
 
 const MAX_FAILURES = 3;
+const SHORT_COOLDOWN_SECONDS = 30;
+const RATE_LIMIT_COOLDOWN_SECONDS = 90;
+const AUTH_COOLDOWN_SECONDS = 60;
+
+function isTokenAuthFailure(status: number): boolean {
+  return status === 401 || status === 403;
+}
 
 function parseTags(tagsJson: string): string[] {
   try {
@@ -201,31 +208,46 @@ export async function recordTokenFailure(
 ): Promise<void> {
   const now = nowMs();
   const reason = `${status}: ${message}`;
+  if (isTokenAuthFailure(status)) {
+    await dbRun(
+      db,
+      "UPDATE tokens SET failed_count = failed_count + 1, last_failure_time = ?, last_failure_reason = ? WHERE token = ?",
+      [now, reason, token],
+    );
+
+    const row = await dbFirst<{ failed_count: number }>(db, "SELECT failed_count FROM tokens WHERE token = ?", [token]);
+    if (!row) return;
+    if (row.failed_count >= MAX_FAILURES) {
+      await dbRun(db, "UPDATE tokens SET status = 'expired' WHERE token = ?", [token]);
+    }
+    return;
+  }
+
   await dbRun(
     db,
-    "UPDATE tokens SET failed_count = failed_count + 1, last_failure_time = ?, last_failure_reason = ? WHERE token = ?",
+    "UPDATE tokens SET last_failure_time = ?, last_failure_reason = ? WHERE token = ?",
     [now, reason, token],
   );
-
-  const row = await dbFirst<{ failed_count: number }>(db, "SELECT failed_count FROM tokens WHERE token = ?", [token]);
-  if (!row) return;
-  if (status >= 400 && status < 500 && row.failed_count >= MAX_FAILURES) {
-    await dbRun(db, "UPDATE tokens SET status = 'expired' WHERE token = ?", [token]);
-  }
 }
 
-export async function applyCooldown(db: Env["DB"], token: string, status: number): Promise<void> {
+export async function applyCooldown(
+  db: Env["DB"],
+  token: string,
+  status: number,
+  retryAfterSeconds?: number,
+): Promise<void> {
   const now = nowMs();
-  let until: number | null = null;
-  if (status === 429) {
-    const row = await dbFirst<{ remaining_queries: number }>(db, "SELECT remaining_queries FROM tokens WHERE token = ?", [token]);
-    const remaining = row?.remaining_queries ?? -1;
-    const seconds = remaining > 0 || remaining === -1 ? 3600 : 36000;
-    until = now + seconds * 1000;
-  } else {
-    // Workers 不适合做“按请求次数”冷却，这里用短时间冷却近似替代。
-    until = now + 30 * 1000;
-  }
+  const retryAfter =
+    Number.isFinite(retryAfterSeconds) && Number(retryAfterSeconds) > 0
+      ? Math.max(15, Math.min(300, Math.floor(Number(retryAfterSeconds))))
+      : null;
+  const seconds =
+    status === 429
+      ? (retryAfter ?? RATE_LIMIT_COOLDOWN_SECONDS)
+      : isTokenAuthFailure(status)
+        ? AUTH_COOLDOWN_SECONDS
+        : SHORT_COOLDOWN_SECONDS;
+  const until = now + seconds * 1000;
   await dbRun(db, "UPDATE tokens SET cooldown_until = ? WHERE token = ?", [until, token]);
 }
 

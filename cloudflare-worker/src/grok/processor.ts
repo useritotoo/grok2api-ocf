@@ -1,4 +1,5 @@
 import type { GrokSettings, GlobalSettings } from "../settings";
+import { consumeNdjsonObjects } from "../utils/ndjson";
 
 type GrokNdjson = Record<string, unknown>;
 
@@ -590,24 +591,15 @@ export async function parseOpenAiFromGrokNdjson(
   opts: { cookie: string; settings: GrokSettings; global: GlobalSettings; origin: string; requestedModel: string },
 ): Promise<Record<string, unknown>> {
   const { global, origin, requestedModel, settings } = opts;
-  const text = await grokResp.text();
-  const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
 
   let content = "";
   let model = requestedModel;
-  for (const line of lines) {
-    let data: GrokNdjson;
-    try {
-      data = JSON.parse(line) as GrokNdjson;
-    } catch {
-      continue;
-    }
-
+  await consumeNdjsonObjects(grokResp, async (data) => {
     const err = (data as any).error;
     if (err?.message) throw new Error(String(err.message));
 
     const grok = (data as any).result?.response;
-    if (!grok) continue;
+    if (!grok) return false;
 
     const videoResp = grok.streamingVideoGenerationResponse;
     if (videoResp?.videoUrl && typeof videoResp.videoUrl === "string") {
@@ -626,11 +618,11 @@ export async function parseOpenAiFromGrokNdjson(
         ...(poster ? { posterUrl: poster } : {}),
       });
       model = requestedModel;
-      break;
+      return true;
     }
 
     const modelResp = grok.modelResponse;
-    if (!modelResp) continue;
+    if (!modelResp) return false;
     if (typeof modelResp.error === "string" && modelResp.error) throw new Error(modelResp.error);
 
     if (typeof modelResp.model === "string" && modelResp.model) model = modelResp.model;
@@ -645,15 +637,12 @@ export async function parseOpenAiFromGrokNdjson(
         const imgUrl = toImgProxyUrl(global, origin, imgPath);
         content += `\n![Generated Image](${imgUrl})`;
       }
-      break;
+      return true;
     }
 
-    // If upstream emits placeholder/empty generatedImageUrls in intermediate frames, keep scanning.
-    if (Array.isArray(rawUrls)) continue;
-
-    // For normal chat replies, the first modelResponse is enough.
-    break;
-  }
+    if (Array.isArray(rawUrls)) return false;
+    return true;
+  });
 
   return {
     id: `chatcmpl-${crypto.randomUUID()}`,

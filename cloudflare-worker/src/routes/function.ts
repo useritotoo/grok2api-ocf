@@ -22,6 +22,7 @@ import { listCacheRowsByType } from "../repo/cache";
 import { applyCooldown, recordTokenFailure, selectBestToken } from "../repo/tokens";
 import { getSettings, normalizeCfCookie } from "../settings";
 import { buildInternalRequestUrl } from "./functionHelpers";
+import { ImagineWsError, collectImagineWsImages } from "../grok/imagineExperimental";
 
 interface ImagineSessionPayload {
   prompt: string;
@@ -338,6 +339,11 @@ interface ImagineImageResultItem {
   base64?: unknown;
 }
 
+interface ImagineOutputItem {
+  field: "url" | "b64_json";
+  value: string;
+}
+
 export function resolveImagineGenerationTarget(imageReference: unknown): {
   path: "/images/generations" | "/images/edits";
   model: "grok-imagine-1.0" | "grok-imagine-1.0-edit";
@@ -361,7 +367,7 @@ export function buildImagineGenerationBody(payload: ImagineSessionPayload): Reco
     prompt: payload.prompt,
     n: 6,
     stream: false,
-    response_format: "url",
+    response_format: "b64_json",
     size: chooseImageSizeFromAspectRatio(payload.aspect_ratio),
     concurrency: 1,
   };
@@ -444,7 +450,7 @@ export async function buildImagineEditFormData(
   form.set("model", resolveImagineGenerationTarget(payload.image_reference).model);
   form.set("prompt", payload.prompt);
   form.set("n", "6");
-  form.set("response_format", "url");
+  form.set("response_format", "b64_json");
   form.set("size", chooseImageSizeFromAspectRatio(payload.aspect_ratio));
   form.append("image", file, file.name);
   return form;
@@ -453,7 +459,7 @@ export async function buildImagineEditFormData(
 async function runImagineBatch(
   c: any,
   payload: ImagineSessionPayload,
-): Promise<string[]> {
+): Promise<ImagineOutputItem[]> {
   const target = resolveImagineGenerationTarget(payload.image_reference);
   const request = target.path === "/images/edits"
     ? await buildInternalRequest(c, target.path, {
@@ -490,14 +496,106 @@ async function runImagineBatch(
 
   const data = Array.isArray(parsed?.data) ? (parsed?.data as ImagineImageResultItem[]) : [];
   const images = data
-    .map((item) => String(item.url ?? item.b64_json ?? item.base64 ?? "").trim())
+    .map((item) => {
+      const b64 = String(item.b64_json ?? item.base64 ?? "").trim();
+      if (b64) return { field: "b64_json" as const, value: b64 };
+      const url = String(item.url ?? "").trim();
+      if (url) return { field: "url" as const, value: url };
+      return null;
+    })
     .filter(Boolean);
 
   if (!images.length) {
     throw new Error("Image generation returned empty data.");
   }
 
-  return images;
+  return images as ImagineOutputItem[];
+}
+
+function imagineStageProgress(stage?: string): number {
+  if (stage === "final") return 100;
+  if (stage === "medium") return 70;
+  return 35;
+}
+
+function imagineErrorStatus(error: unknown): number {
+  if (error instanceof ImagineWsError && typeof error.status === "number") {
+    return error.status;
+  }
+  return 500;
+}
+
+async function runImagineWsBatch(args: {
+  c: any;
+  payload: ImagineSessionPayload;
+  runId: string;
+  safeSend: (payload: Record<string, unknown>) => Promise<boolean>;
+  batchStart: number;
+  nextSequence: () => number;
+}): Promise<void> {
+  const settingsBundle = await getSettings(args.c.env);
+  const current = await getCurrentConfig(args.c.env);
+  const imageConfig = current.image ?? {};
+  const chosen = await selectBestToken(args.c.env.DB, "grok-imagine-1.0");
+  if (!chosen) {
+    throw new Error("No available token");
+  }
+
+  const cf = normalizeCfCookie(settingsBundle.grok.cf_clearance ?? "");
+  const cookie = cf
+    ? `sso-rw=${chosen.token};sso=${chosen.token};${cf}`
+    : `sso-rw=${chosen.token};sso=${chosen.token}`;
+  const emittedPartialKeys = new Set<string>();
+  const emittedCompletedIds = new Set<string>();
+
+  try {
+    await collectImagineWsImages({
+      prompt: args.payload.prompt,
+      n: 6,
+      cookie,
+      settings: settingsBundle.grok,
+      aspectRatio: args.payload.aspect_ratio,
+      enableNsfw: args.payload.nsfw !== false,
+      finalMinBytes: Number(imageConfig.final_min_bytes ?? 100000),
+      mediumMinBytes: Number(imageConfig.medium_min_bytes ?? 30000),
+      imageCb: async (image) => {
+        if (image.isFinal) return;
+        const key = `${image.imageId}:${image.stage}:${image.blobSize}`;
+        if (emittedPartialKeys.has(key)) return;
+        emittedPartialKeys.add(key);
+        await args.safeSend({
+          type: "image_generation.partial_image",
+          image_id: image.imageId,
+          b64_json: image.blob,
+          stage: image.stage,
+          progress: image.progress || imagineStageProgress(image.stage),
+          elapsed_ms: Date.now() - args.batchStart,
+          aspect_ratio: args.payload.aspect_ratio,
+          run_id: args.runId,
+        });
+      },
+      completedCb: async (image) => {
+        if (emittedCompletedIds.has(image.imageId)) return;
+        emittedCompletedIds.add(image.imageId);
+        await args.safeSend({
+          type: "image_generation.completed",
+          image_id: image.imageId,
+          b64_json: image.blob ?? "",
+          sequence: args.nextSequence(),
+          stage: "final",
+          elapsed_ms: Date.now() - args.batchStart,
+          aspect_ratio: args.payload.aspect_ratio,
+          run_id: args.runId,
+        });
+      },
+    });
+  } catch (error) {
+    const status = imagineErrorStatus(error);
+    const message = error instanceof Error ? error.message : String(error);
+    await recordTokenFailure(args.c.env.DB, chosen.token, status, message.slice(0, 200));
+    await applyCooldown(args.c.env.DB, chosen.token, status);
+    throw error;
+  }
 }
 
 const MAX_IMAGINE_CONSECUTIVE_FAILURES = 3;
@@ -535,17 +633,32 @@ async function runImagineLoop(args: {
   while (await args.isActive()) {
     const batchStart = Date.now();
     try {
+      if (!args.payload.image_reference) {
+        await runImagineWsBatch({
+          c: args.c,
+          payload: args.payload,
+          runId,
+          safeSend,
+          batchStart,
+          nextSequence: () => {
+            sequence += 1;
+            return sequence;
+          },
+        });
+        failures = 0;
+        continue;
+      }
+
       const images = await runImagineBatch(args.c, args.payload);
       failures = 0;
 
       for (const image of images) {
         if (!(await args.isActive())) break;
         sequence += 1;
-        const field = image.startsWith("data:") ? "b64_json" : "url";
         const delivered = await safeSend({
           type: "image_generation.completed",
           image_id: `${runId}-${sequence - 1}`,
-          [field]: image,
+          [image.field]: image.value,
           sequence,
           elapsed_ms: Date.now() - batchStart,
           aspect_ratio: args.payload.aspect_ratio,

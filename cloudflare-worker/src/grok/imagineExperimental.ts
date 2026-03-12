@@ -61,9 +61,39 @@ export interface ImagineWsProgress {
   progress: number;
 }
 
+export type ImagineWsStage = "preview" | "medium" | "final";
+
 export interface ImagineWsCompleted {
   index: number;
   url: string;
+  imageId: string;
+  blob?: string;
+  blobSize?: number;
+  stage: "final";
+}
+
+export interface ImagineWsImageFrame {
+  index: number;
+  imageId: string;
+  ext: string | null;
+  stage: ImagineWsStage;
+  blob: string;
+  blobSize: number;
+  url: string;
+  isFinal: boolean;
+  progress: number;
+}
+
+export class ImagineWsError extends Error {
+  status?: number;
+
+  constructor(message: string, status?: number) {
+    super(message);
+    this.name = "ImagineWsError";
+    if (typeof status === "number" && Number.isFinite(status)) {
+      this.status = status;
+    }
+  }
 }
 
 function clampProgress(input: unknown): number | null {
@@ -122,15 +152,70 @@ function extractUrl(msg: WsJson): string {
   return "";
 }
 
-function isCompleted(msg: WsJson, progress: number | null): boolean {
-  const status = String(msg.current_status ?? msg.currentStatus ?? "")
-    .trim()
-    .toLowerCase();
-  if (status === "completed" || status === "done" || status === "success") return true;
-  return progress !== null && progress >= 100;
+function extractBlob(msg: WsJson): string {
+  for (const key of ["blob", "imageBlob", "image_blob"] as const) {
+    const value = msg[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return "";
 }
 
-function buildImagineWsPayload(prompt: string, requestId: string, aspectRatio: string): WsJson {
+function stageProgress(stage: ImagineWsStage): number {
+  if (stage === "final") return 100;
+  if (stage === "medium") return 70;
+  return 35;
+}
+
+function parseImageIdentity(rawUrl: string): { imageId: string | null; ext: string | null } {
+  const match = rawUrl.match(/\/images\/([a-f0-9-]+)\.(png|jpg|jpeg)/i);
+  if (!match) return { imageId: null, ext: null };
+  return {
+    imageId: match[1] ?? null,
+    ext: match[2]?.toLowerCase() ?? null,
+  };
+}
+
+function classifyImageFrame(
+  msg: WsJson,
+  index: number,
+  fallbackImageId: string,
+  finalMinBytes: number,
+  mediumMinBytes: number,
+  progress: number | null,
+): ImagineWsImageFrame | null {
+  const url = extractUrl(msg);
+  const blob = extractBlob(msg);
+  if (!url || !blob) return null;
+
+  const identity = parseImageIdentity(url);
+  const imageId = identity.imageId ?? fallbackImageId;
+  const blobSize = blob.length;
+  const isFinal = blobSize >= finalMinBytes;
+  const stage: ImagineWsStage = isFinal
+    ? "final"
+    : blobSize > mediumMinBytes
+      ? "medium"
+      : "preview";
+
+  return {
+    index,
+    imageId,
+    ext: identity.ext,
+    stage,
+    blob,
+    blobSize,
+    url,
+    isFinal,
+    progress: progress ?? stageProgress(stage),
+  };
+}
+
+function buildImagineWsPayload(
+  prompt: string,
+  requestId: string,
+  aspectRatio: string,
+  enableNsfw: boolean,
+): WsJson {
   return {
     type: "conversation.item.create",
     timestamp: Date.now(),
@@ -140,11 +225,11 @@ function buildImagineWsPayload(prompt: string, requestId: string, aspectRatio: s
         {
           requestId,
           text: prompt,
-          type: "input_scroll",
+          type: "input_text",
           properties: {
             section_count: 0,
             is_kids_mode: false,
-            enable_nsfw: true,
+            enable_nsfw: enableNsfw,
             skip_upsampler: false,
             is_initial: false,
             aspect_ratio: aspectRatio,
@@ -155,19 +240,26 @@ function buildImagineWsPayload(prompt: string, requestId: string, aspectRatio: s
   };
 }
 
-export async function generateImagineWs(args: {
+export async function collectImagineWsImages(args: {
   prompt: string;
   n: number;
   cookie: string;
   settings: GrokSettings;
   timeoutMs?: number;
   aspectRatio?: string;
+  enableNsfw?: boolean;
+  finalMinBytes?: number;
+  mediumMinBytes?: number;
   progressCb?: (progress: ImagineWsProgress) => void | Promise<void>;
+  imageCb?: (image: ImagineWsImageFrame) => void | Promise<void>;
   completedCb?: (completed: ImagineWsCompleted) => void | Promise<void>;
-}): Promise<string[]> {
+}): Promise<ImagineWsImageFrame[]> {
   const timeoutMs = Math.max(10_000, Number(args.timeoutMs ?? 120_000));
   const targetCount = Math.max(1, Math.floor(Number(args.n || 1)));
   const aspectRatio = resolveAspectRatio(args.aspectRatio);
+  const enableNsfw = args.enableNsfw !== false;
+  const finalMinBytes = Math.max(1, Math.floor(Number(args.finalMinBytes ?? 100_000)));
+  const mediumMinBytes = Math.max(1, Math.floor(Number(args.mediumMinBytes ?? 30_000)));
   const requestId = crypto.randomUUID();
 
   const headers = getDynamicHeaders(args.settings, "/ws/imagine/listen");
@@ -182,14 +274,17 @@ export async function generateImagineWs(args: {
   const ws = wsResp.webSocket;
   if (wsResp.status !== 101 || !ws) {
     const text = await wsResp.text().catch(() => "");
-    throw new Error(`Imagine websocket connect failed: ${wsResp.status} ${text.slice(0, 200)}`);
+    throw new ImagineWsError(
+      `Imagine websocket connect failed: ${wsResp.status} ${text.slice(0, 200)}`,
+      wsResp.status,
+    );
   }
 
   ws.accept();
-  ws.send(JSON.stringify(buildImagineWsPayload(args.prompt, requestId, aspectRatio)));
+  ws.send(JSON.stringify(buildImagineWsPayload(args.prompt, requestId, aspectRatio, enableNsfw)));
 
   const imageIndexes = new Map<string, number>();
-  const finalUrls = new Map<string, string>();
+  const finalImages = new Map<string, ImagineWsImageFrame>();
 
   await new Promise<void>((resolve, reject) => {
     let finished = false;
@@ -206,7 +301,13 @@ export async function generateImagineWs(args: {
       if (type === "error" || status === "error") {
         const errCode = String(msg.err_code ?? msg.errCode ?? "unknown");
         const errMessage = String(msg.err_message ?? msg.err_msg ?? msg.error ?? "unknown error");
-        finish(new Error(`Imagine websocket error (${errCode}): ${errMessage}`));
+        const errStatus = Number(msg.status ?? NaN);
+        finish(
+          new ImagineWsError(
+            `Imagine websocket error (${errCode}): ${errMessage}`,
+            Number.isFinite(errStatus) ? errStatus : undefined,
+          ),
+        );
         return;
       }
 
@@ -222,29 +323,57 @@ export async function generateImagineWs(args: {
         });
       }
 
-      const imageUrl = extractUrl(msg);
-      if (imageUrl && isCompleted(msg, progress)) {
-        if (!finalUrls.has(imageId)) finalUrls.set(imageId, imageUrl);
+      if (type !== "image") return;
+
+      const image = classifyImageFrame(
+        msg,
+        imageIndex,
+        imageId,
+        finalMinBytes,
+        mediumMinBytes,
+        progress,
+      );
+      if (!image) return;
+
+      if (args.imageCb) {
+        Promise.resolve(args.imageCb(image)).catch(() => {
+          // ignore callback failures
+        });
+      }
+
+      if (image.isFinal) {
+        if (!finalImages.has(image.imageId)) {
+          finalImages.set(image.imageId, image);
+        }
         if (args.completedCb) {
-          Promise.resolve(args.completedCb({ index: imageIndex, url: imageUrl })).catch(() => {
+          Promise.resolve(
+            args.completedCb({
+              index: image.index,
+              url: image.url,
+              imageId: image.imageId,
+              blob: image.blob,
+              blobSize: image.blobSize,
+              stage: "final",
+            }),
+          ).catch(() => {
             // ignore callback failures
           });
         }
-        if (finalUrls.size >= targetCount) finish();
+        if (finalImages.size >= targetCount) finish();
       }
     };
 
     const onClose = () => {
-      if (finalUrls.size > 0) finish();
-      else finish(new Error("Imagine websocket closed before completed images"));
+      if (finalImages.size > 0) finish();
+      else finish(new ImagineWsError("Imagine websocket closed before completed images"));
     };
 
     const onError = () => {
-      finish(new Error("Imagine websocket error event"));
+      finish(new ImagineWsError("Imagine websocket error event"));
     };
 
     const timer = setTimeout(() => {
-      finish(new Error(`Imagine websocket timeout after ${timeoutMs}ms`));
+      finish(new ImagineWsError(`Imagine websocket timeout after ${timeoutMs}ms`));
     }, timeoutMs);
 
     const cleanup = () => {
@@ -272,11 +401,31 @@ export async function generateImagineWs(args: {
     ws.addEventListener("error", onError as EventListener);
   });
 
-  const urls = Array.from(finalUrls.values()).filter(Boolean);
-  if (!urls.length) {
-    throw new Error("Imagine websocket returned no completed images");
+  const images = Array.from(finalImages.values())
+    .filter((value): value is ImagineWsImageFrame => Boolean(value?.url))
+    .sort((a, b) => a.index - b.index);
+  if (!images.length) {
+    throw new ImagineWsError("Imagine websocket returned no completed images");
   }
-  return urls;
+  return images;
+}
+
+export async function generateImagineWs(args: {
+  prompt: string;
+  n: number;
+  cookie: string;
+  settings: GrokSettings;
+  timeoutMs?: number;
+  aspectRatio?: string;
+  enableNsfw?: boolean;
+  finalMinBytes?: number;
+  mediumMinBytes?: number;
+  progressCb?: (progress: ImagineWsProgress) => void | Promise<void>;
+  imageCb?: (image: ImagineWsImageFrame) => void | Promise<void>;
+  completedCb?: (completed: ImagineWsCompleted) => void | Promise<void>;
+}): Promise<string[]> {
+  const images = await collectImagineWsImages(args);
+  return images.map((image) => image.url).filter(Boolean);
 }
 
 function buildExperimentalImageEditPayload(args: {

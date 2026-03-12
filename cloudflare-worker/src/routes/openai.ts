@@ -11,7 +11,8 @@ import { createMediaPost, createPost } from "../grok/create";
 import { createOpenAiStreamFromGrokNdjson, parseOpenAiFromGrokNdjson } from "../grok/processor";
 import {
   IMAGE_METHOD_IMAGINE_WS_EXPERIMENTAL,
-  generateImagineWs,
+  ImagineWsError,
+  collectImagineWsImages,
   resolveAspectRatio,
   resolveImageGenerationMethod,
   sendExperimentalImageEditRequest,
@@ -25,6 +26,7 @@ import { nextLocalMidnightExpirationSeconds } from "../kv/cleanup";
 import { nowMs } from "../utils/time";
 import { arrayBufferToBase64 } from "../utils/base64";
 import { upsertCacheRow } from "../repo/cache";
+import { consumeNdjsonObjects } from "../utils/ndjson";
 
 function openAiError(message: string, code: string): Record<string, unknown> {
   return { error: { message, type: "invalid_request_error", code } };
@@ -359,24 +361,122 @@ async function convertRawUrlByFormat(
   return fetchImageAsBase64({ rawUrl, cookie: args.cookie, settings: args.settings });
 }
 
-async function collectImageUrls(resp: Response): Promise<string[]> {
-  const text = await resp.text();
-  const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+async function convertImagineFrameByFormat(
+  asset: { url: string; blob?: string },
+  responseFormat: ImageResponseFormat,
+  args: {
+    baseUrl: string;
+    cookie: string;
+    settings: Awaited<ReturnType<typeof getSettings>>["grok"];
+  },
+): Promise<string> {
+  if (responseFormat === "url") {
+    return toProxyUrl(args.baseUrl, encodeAssetPath(asset.url));
+  }
+  if (asset.blob) {
+    return asset.blob;
+  }
+  return fetchImageAsBase64({ rawUrl: asset.url, cookie: args.cookie, settings: args.settings });
+}
+
+async function collectImageUrls(resp: Response, maxResults = Number.POSITIVE_INFINITY): Promise<string[]> {
   const allUrls: string[] = [];
-  for (const line of lines) {
-    let data: any;
-    try {
-      data = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    const err = data?.error;
+  await consumeNdjsonObjects(resp, async (data) => {
+    const err = (data as { error?: { message?: unknown } }).error;
     if (err?.message) throw new Error(String(err.message));
-    const grok = data?.result?.response;
+    const grok = (data as { result?: { response?: any } }).result?.response;
     const urls = normalizeGeneratedImageUrls(grok?.modelResponse?.generatedImageUrls);
     if (urls.length) allUrls.push(...urls);
-  }
+    return allUrls.length >= maxResults;
+  });
   return allUrls;
+}
+
+function imageStageProgress(stage?: string): number {
+  if (stage === "final") return 100;
+  if (stage === "medium") return 70;
+  return 35;
+}
+
+function errorStatusCode(error: unknown): number {
+  if (error instanceof ImagineWsError && typeof error.status === "number") {
+    return error.status;
+  }
+  return 500;
+}
+
+function buildChatImageMarkdown(images: string[]): string {
+  return images
+    .filter(Boolean)
+    .map((image) => `![Generated Image](${image})`)
+    .join("\n");
+}
+
+function buildSyntheticChatCompletion(model: string, content: string): Record<string, unknown> {
+  return {
+    id: `chatcmpl-${crypto.randomUUID()}`,
+    object: "chat.completion",
+    created: Math.floor(Date.now() / 1000),
+    model,
+    choices: [
+      {
+        index: 0,
+        message: { role: "assistant", content },
+        finish_reason: "stop",
+      },
+    ],
+    usage: null,
+  };
+}
+
+function createSyntheticChatImageStream(args: {
+  model: string;
+  images: string[];
+  onFinish?: (result: { status: number; duration: number }) => Promise<void> | void;
+}): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  const id = `chatcmpl-${crypto.randomUUID()}`;
+  const created = Math.floor(Date.now() / 1000);
+
+  const makeChunk = (content: string, finishReason?: "stop" | null): string =>
+    `data: ${JSON.stringify({
+      id,
+      object: "chat.completion.chunk",
+      created,
+      model: args.model,
+      choices: [
+        {
+          index: 0,
+          delta: content ? { role: "assistant", content } : {},
+          finish_reason: finishReason ?? null,
+        },
+      ],
+    })}\n\n`;
+
+  return new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const startedAt = Date.now();
+      try {
+        for (let i = 0; i < args.images.length; i++) {
+          const image = args.images[i];
+          if (!image || image === "error") continue;
+          const prefix = i === 0 ? "" : "\n";
+          controller.enqueue(encoder.encode(makeChunk(`${prefix}![Generated Image](${image})`)));
+        }
+        controller.enqueue(encoder.encode(makeChunk("", "stop")));
+        controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+        if (args.onFinish) {
+          await args.onFinish({ status: 200, duration: (Date.now() - startedAt) / 1000 });
+        }
+        controller.close();
+      } catch (error) {
+        if (args.onFinish) {
+          await args.onFinish({ status: 500, duration: (Date.now() - startedAt) / 1000 });
+        }
+        controller.error(error);
+      }
+    },
+  });
 }
 
 function buildImageSse(event: string, data: Record<string, unknown>): string {
@@ -610,7 +710,7 @@ async function runImageCall(args: {
     const txt = await upstream.text().catch(() => "");
     throw new Error(`Upstream ${upstream.status}: ${txt.slice(0, 200)}`);
   }
-  const rawUrls = await collectImageUrls(upstream);
+  const rawUrls = await collectImageUrls(upstream, 2);
   const converted = await Promise.all(
     rawUrls.map((rawUrl) =>
       convertRawUrlByFormat(rawUrl, args.responseFormat, {
@@ -660,41 +760,21 @@ async function collectExperimentalGenerationImages(args: {
   aspectRatio: string;
   concurrency: number;
 }): Promise<string[]> {
-  const calls = Math.ceil(Math.max(1, args.n) / 4);
-  const plans = Array.from({ length: calls }, (_, i) => {
-    const alreadyPlanned = i * 4;
-    const chunkN = Math.max(1, Math.min(4, args.n - alreadyPlanned));
-    return { chunkN };
+  void args.concurrency;
+  const images = await collectImagineWsImages({
+    prompt: args.prompt,
+    n: Math.max(1, args.n),
+    cookie: args.cookie,
+    settings: args.settings,
+    aspectRatio: args.aspectRatio,
   });
-
-  const settled = await runTasksSettledWithLimit(
-    plans,
-    Math.min(plans.length, Math.max(1, args.concurrency || 1)),
-    async (plan) =>
-      generateImagineWs({
-        prompt: args.prompt,
-        n: plan.chunkN,
-        cookie: args.cookie,
-        settings: args.settings,
-        aspectRatio: args.aspectRatio,
-      }),
-  );
-  const rawUrls: string[] = [];
-  for (const item of settled) {
-    if (item.status === "fulfilled") rawUrls.push(...item.value);
-  }
-  if (!rawUrls.length) {
-    const firstRejected = settled.find(
-      (item): item is PromiseRejectedResult => item.status === "rejected",
-    );
-    if (firstRejected) throw firstRejected.reason;
+  if (!images.length) {
     throw new Error("Experimental imagine websocket returned no images");
   }
-  const dedupedRawUrls = dedupeImages(rawUrls);
 
   const converted = await Promise.all(
-    dedupedRawUrls.map((rawUrl) =>
-      convertRawUrlByFormat(rawUrl, args.responseFormat, {
+    images.map((image) =>
+      convertImagineFrameByFormat(image, args.responseFormat, {
         baseUrl: args.baseUrl,
         cookie: args.cookie,
         settings: args.settings,
@@ -718,7 +798,7 @@ async function runExperimentalImageEditCall(args: {
     cookie: args.cookie,
     settings: args.settings,
   });
-  const rawUrls = await collectImageUrls(upstream);
+  const rawUrls = await collectImageUrls(upstream, 2);
   const converted = await Promise.all(
     rawUrls.map((rawUrl) =>
       convertRawUrlByFormat(rawUrl, args.responseFormat, {
@@ -868,23 +948,29 @@ function createExperimentalImageEventStream(args: {
 }): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
   const safeN = Math.max(1, Math.floor(args.n || 1));
-  const concurrency = Math.max(1, Math.min(3, Math.floor(args.concurrency || 1)));
+  void args.concurrency;
 
   return new ReadableStream<Uint8Array>({
     async start(controller) {
       const startedAt = Date.now();
       const completedByIndex = new Map<number, string>();
+      const partialKeyByIndex = new Map<number, string>();
 
-      const emitPartial = (index: number, progress: number) => {
+      const emitPartial = (index: number, value: string, progress: number, stage?: string) => {
         if (index < 0 || index >= safeN) return;
+        if (!value) return;
         const pct = Math.max(0, Math.min(100, Number(progress) || 0));
+        const dedupeKey = `${stage ?? ""}:${value.length}:${pct}`;
+        if (partialKeyByIndex.get(index) === dedupeKey) return;
+        partialKeyByIndex.set(index, dedupeKey);
         controller.enqueue(
           encoder.encode(
             buildImageSse("image_generation.partial_image", {
               type: "image_generation.partial_image",
-              [args.responseField]: "",
+              [args.responseField]: value,
               index,
               progress: pct,
+              ...(stage ? { stage } : {}),
             }),
           ),
         );
@@ -916,90 +1002,45 @@ function createExperimentalImageEventStream(args: {
         );
       };
 
-      const toOutIndex = (offset: number, localIndex: number) =>
-        Math.max(0, Math.min(safeN - 1, offset + Math.max(0, Math.floor(localIndex || 0))));
-
       try {
-        const callCount = Math.ceil(safeN / 4);
-        const plans = Array.from({ length: callCount }, (_, i) => {
-          const offset = i * 4;
-          const chunkN = Math.max(1, Math.min(4, safeN - offset));
-          return { offset, chunkN };
-        });
-
-        const settled = await runTasksSettledWithLimit(
-          plans,
-          Math.min(plans.length, concurrency),
-          async (plan) => {
-            const rawUrls = await generateImagineWs({
-              prompt: args.prompt,
-              n: plan.chunkN,
-              cookie: args.cookie,
-              settings: args.settings,
-              aspectRatio: args.aspectRatio,
-              progressCb: ({ index, progress }) => {
-                emitPartial(toOutIndex(plan.offset, index), progress);
-              },
-              completedCb: async ({ index, url }) => {
-                const converted = await convertRawUrlByFormat(url, args.responseFormat, {
-                  baseUrl: args.baseUrl,
-                  cookie: args.cookie,
-                  settings: args.settings,
-                });
-                if (converted) {
-                  emitCompleted(toOutIndex(plan.offset, index), converted);
-                }
-              },
-            });
-            return { plan, rawUrls };
-          },
-        );
-
-        for (const item of settled) {
-          if (item.status !== "fulfilled") continue;
-          const { plan, rawUrls } = item.value;
-          for (let i = 0; i < rawUrls.length; i++) {
-            const outIndex = toOutIndex(plan.offset, i);
-            if (completedByIndex.has(outIndex)) continue;
-            const converted = await convertRawUrlByFormat(rawUrls[i] ?? "", args.responseFormat, {
+        const images = await collectImagineWsImages({
+          prompt: args.prompt,
+          n: safeN,
+          cookie: args.cookie,
+          settings: args.settings,
+          aspectRatio: args.aspectRatio,
+          imageCb: async (image) => {
+            if (image.isFinal) return;
+            const converted = await convertImagineFrameByFormat(image, args.responseFormat, {
               baseUrl: args.baseUrl,
               cookie: args.cookie,
               settings: args.settings,
             });
             if (converted) {
-              emitCompleted(outIndex, converted);
+              emitPartial(image.index, converted, image.progress || imageStageProgress(image.stage), image.stage);
             }
-          }
-        }
-
-        if (!Array.from(completedByIndex.values()).some((v) => v && v !== "error")) {
-          try {
-            const allImages = await collectExperimentalGenerationImages({
-              prompt: args.prompt,
-              n: safeN,
+          },
+          completedCb: async (image) => {
+            const converted = await convertImagineFrameByFormat(image, args.responseFormat, {
+              baseUrl: args.baseUrl,
               cookie: args.cookie,
               settings: args.settings,
-              responseFormat: args.responseFormat,
-              baseUrl: args.baseUrl,
-              aspectRatio: args.aspectRatio,
-              concurrency,
             });
-            const selected = pickImageResults(dedupeImages(allImages), safeN);
-            for (let i = 0; i < selected.length; i++) {
-              const value = selected[i] ?? "error";
-              if (value !== "error") emitPartial(i, 100);
-              emitCompleted(i, value);
+            if (converted) {
+              emitCompleted(image.index, converted);
             }
-          } catch (fallbackErr) {
-            const message = fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr);
-            controller.enqueue(
-              encoder.encode(
-                buildImageSse("image_generation.error", {
-                  type: "image_generation.error",
-                  message,
-                }),
-              ),
-            );
+          },
+        });
+
+        for (const image of images) {
+          if (completedByIndex.has(image.index)) continue;
+          const converted = await convertImagineFrameByFormat(image, args.responseFormat, {
+            baseUrl: args.baseUrl,
+            cookie: args.cookie,
+            settings: args.settings,
+          });
+          if (converted) {
+            emitCompleted(image.index, converted);
           }
         }
 
@@ -1161,18 +1202,8 @@ function resolveImageResponseFormatByMethodOrError(
   defaultMode: string,
   imageMethod: ReturnType<typeof resolveImageGenerationMethod>,
 ) {
-  const missing =
-    raw === undefined ||
-    raw === null ||
-    (typeof raw === "string" && raw.trim().length === 0);
-  const normalizedDefault = String(defaultMode || "url").trim().toLowerCase();
-  const effectiveDefault =
-    missing &&
-      imageMethod === IMAGE_METHOD_IMAGINE_WS_EXPERIMENTAL &&
-      normalizedDefault === "url"
-      ? "b64_json"
-      : defaultMode;
-  return parseResponseFormatOrError(raw, effectiveDefault);
+  void imageMethod;
+  return parseResponseFormatOrError(raw, defaultMode);
 }
 
 openAiRoutes.get("/images/method", async (c) => {
@@ -1270,6 +1301,80 @@ openAiRoutes.post("/chat/completions", async (c) => {
         const imageUploads = uploads.filter((item) => item.attachment.kind === "image");
         const imgIds = imageUploads.map((item) => item.uploaded.fileId).filter(Boolean);
         const imgUris = imageUploads.map((item) => item.uploaded.fileUri).filter(Boolean);
+        const canUseExperimentalImageChat =
+          requestedModel === IMAGE_GENERATION_MODEL_ID &&
+          Boolean(cfg.is_image_model) &&
+          !fileIds.length &&
+          !imgIds.length &&
+          !imgUris.length &&
+          imageGenerationMethod(settingsBundle) === IMAGE_METHOD_IMAGINE_WS_EXPERIMENTAL;
+
+        if (canUseExperimentalImageChat) {
+          try {
+            const baseUrl = baseUrlFromSettings(settingsBundle, origin);
+            const images = await collectExperimentalGenerationImages({
+              prompt: imageCallPrompt("generation", content),
+              n: 2,
+              cookie,
+              settings: settingsBundle.grok,
+              responseFormat: "url",
+              baseUrl,
+              aspectRatio: "2:3",
+              concurrency: 1,
+            });
+            const selected = pickImageResults(images, 2);
+
+            if (stream) {
+              const sse = createSyntheticChatImageStream({
+                model: requestedModel,
+                images: selected,
+                onFinish: async ({ status, duration }) => {
+                  await addRequestLog(c.env.DB, {
+                    ip,
+                    model: requestedModel,
+                    duration: Number(duration.toFixed(2)),
+                    status,
+                    key_name: keyName,
+                    token_suffix: jwt.slice(-6),
+                    error: status === 200 ? "" : "stream_error",
+                  });
+                },
+              });
+
+              return new Response(sse, {
+                status: 200,
+                headers: {
+                  "Content-Type": "text/event-stream; charset=utf-8",
+                  "Cache-Control": "no-cache",
+                  Connection: "keep-alive",
+                  "X-Accel-Buffering": "no",
+                  "Access-Control-Allow-Origin": "*",
+                },
+              });
+            }
+
+            const duration = (Date.now() - start) / 1000;
+            await addRequestLog(c.env.DB, {
+              ip,
+              model: requestedModel,
+              duration: Number(duration.toFixed(2)),
+              status: 200,
+              key_name: keyName,
+              token_suffix: jwt.slice(-6),
+              error: "",
+            });
+
+            return c.json(buildSyntheticChatCompletion(requestedModel, buildChatImageMarkdown(selected)));
+          } catch (experimentalError) {
+            const status = errorStatusCode(experimentalError);
+            const message =
+              experimentalError instanceof Error ? experimentalError.message : String(experimentalError);
+            lastErr = message;
+            await recordTokenFailure(c.env.DB, jwt, status, message.slice(0, 200));
+            await applyCooldown(c.env.DB, jwt, status);
+            console.warn("Experimental image chat failed, fallback to legacy:", message);
+          }
+        }
 
         let postId: string | undefined;
         if (isVideoModel) {
@@ -1444,12 +1549,12 @@ openAiRoutes.post("/images/generations", async (c) => {
     }
     const concurrency = concurrencyParsed.value;
     const stream = parseImageStream(body.stream);
-    if (stream && ![1, 2].includes(n)) {
-      return c.json(openAiError(invalidStreamNMessage(), "invalid_stream_n"), 400);
-    }
 
     const settingsBundle = await getSettings(c.env);
     const imageMethod = imageGenerationMethod(settingsBundle);
+    if (stream && imageMethod !== IMAGE_METHOD_IMAGINE_WS_EXPERIMENTAL && ![1, 2].includes(n)) {
+      return c.json(openAiError(invalidStreamNMessage(), "invalid_stream_n"), 400);
+    }
     const parsedResponseFormat = resolveImageResponseFormatByMethodOrError(
       body.response_format,
       imageFormatDefault(settingsBundle),
@@ -1611,8 +1716,9 @@ openAiRoutes.post("/images/generations", async (c) => {
           return c.json(buildImageJsonPayload(responseField, selected));
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
-          await recordTokenFailure(c.env.DB, experimentalToken.token, 500, msg.slice(0, 200));
-          await applyCooldown(c.env.DB, experimentalToken.token, 500);
+          const status = errorStatusCode(e);
+          await recordTokenFailure(c.env.DB, experimentalToken.token, status, msg.slice(0, 200));
+          await applyCooldown(c.env.DB, experimentalToken.token, status);
           console.warn("Experimental image generation failed, fallback to legacy:", msg);
         }
       }
@@ -1824,8 +1930,9 @@ openAiRoutes.post("/images/edits", async (c) => {
           return new Response(streamBody, { status: 200, headers: streamHeaders() });
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
-          await recordTokenFailure(c.env.DB, chosen.token, 500, msg.slice(0, 200));
-          await applyCooldown(c.env.DB, chosen.token, 500);
+          const status = errorStatusCode(e);
+          await recordTokenFailure(c.env.DB, chosen.token, status, msg.slice(0, 200));
+          await applyCooldown(c.env.DB, chosen.token, status);
           console.warn("Experimental image edit stream failed, fallback to legacy:", msg);
         }
       }
@@ -1914,8 +2021,9 @@ openAiRoutes.post("/images/edits", async (c) => {
         return c.json(buildImageJsonPayload(responseField, selected));
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
-        await recordTokenFailure(c.env.DB, chosen.token, 500, msg.slice(0, 200));
-        await applyCooldown(c.env.DB, chosen.token, 500);
+        const status = errorStatusCode(e);
+        await recordTokenFailure(c.env.DB, chosen.token, status, msg.slice(0, 200));
+        await applyCooldown(c.env.DB, chosen.token, status);
         console.warn("Experimental image edit failed, fallback to legacy:", msg);
       }
     }

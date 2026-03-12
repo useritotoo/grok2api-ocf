@@ -3,7 +3,7 @@ import type { Env } from "../env";
 import { getSettings, normalizeCfCookie } from "../settings";
 import { applyCooldown, recordTokenFailure, selectBestToken } from "../repo/tokens";
 import { getDynamicHeaders } from "../grok/headers";
-import { deleteCacheRow, touchCacheRow, upsertCacheRow, type CacheType } from "../repo/cache";
+import { deleteCacheRow, upsertCacheRow, type CacheType } from "../repo/cache";
 import { nowMs } from "../utils/time";
 import { nextLocalMidnightExpirationSeconds } from "../kv/cleanup";
 
@@ -126,6 +126,22 @@ function responseFromBytes(args: {
   return new Response(args.bytes, { status: 200, headers });
 }
 
+function responseFromStream(args: {
+  body: ReadableStream;
+  contentType: string;
+  cacheSeconds: number;
+  contentLength?: number | null;
+}): Response {
+  const headers = new Headers();
+  headers.set("Access-Control-Allow-Origin", "*");
+  headers.set("Cache-Control", `public, max-age=${args.cacheSeconds}`);
+  headers.set("Content-Type", args.contentType || "application/octet-stream");
+  if (Number.isFinite(args.contentLength) && Number(args.contentLength) > 0) {
+    headers.set("Content-Length", String(Math.floor(Number(args.contentLength))));
+  }
+  return new Response(args.body, { status: 200, headers });
+}
+
 function toUpstreamHeaders(args: { pathname: string; cookie: string; settings: Awaited<ReturnType<typeof getSettings>>["grok"] }): Record<string, string> {
   const headers = getDynamicHeaders(args.settings, args.pathname);
   headers.Cookie = args.cookie;
@@ -236,13 +252,27 @@ mediaRoutes.get("/images/:imgPath{.+}", async (c) => {
   const cacheSeconds = guessCacheSeconds(originalPath);
 
   const rangeHeader = c.req.header("Range");
-  const cached = await c.env.KV_CACHE.getWithMetadata<{ contentType?: string; size?: number }>(key, {
-    type: "arrayBuffer",
-  });
-  if (cached?.value) {
-    c.executionCtx.waitUntil(touchCacheRow(c.env.DB, key, nowMs()));
-    const contentType = (cached.metadata?.contentType as string | undefined) ?? "application/octet-stream";
-    return responseFromBytes({ bytes: cached.value, contentType, cacheSeconds, rangeHeader });
+  if (rangeHeader) {
+    const cached = await c.env.KV_CACHE.getWithMetadata<{ contentType?: string; size?: number }>(key, {
+      type: "arrayBuffer",
+    });
+    if (cached?.value) {
+      const contentType = (cached.metadata?.contentType as string | undefined) ?? "application/octet-stream";
+      return responseFromBytes({ bytes: cached.value, contentType, cacheSeconds, rangeHeader });
+    }
+  } else {
+    const cached = await c.env.KV_CACHE.getWithMetadata<{ contentType?: string; size?: number }>(key, {
+      type: "stream",
+    });
+    if (cached?.value) {
+      const contentType = (cached.metadata?.contentType as string | undefined) ?? "application/octet-stream";
+      return responseFromStream({
+        body: cached.value,
+        contentType,
+        cacheSeconds,
+        contentLength: cached.metadata?.size ?? null,
+      });
+    }
   }
 
   // stale metadata cleanup (best-effort)
@@ -272,6 +302,7 @@ mediaRoutes.get("/images/:imgPath{.+}", async (c) => {
   const contentLength = contentLengthHeader ? Number(contentLengthHeader) : NaN;
   const maxBytes = Math.min(25 * 1024 * 1024, Math.max(1, parseIntSafe(c.env.KV_CACHE_MAX_BYTES, 25 * 1024 * 1024)));
   const shouldTryCache = !rangeHeader && shouldTryCacheContent(contentLength, maxBytes);
+  const shouldPersistMiss = shouldTryCache && type === "video";
 
   if (rangeHeader && type === "video") {
     c.executionCtx.waitUntil(
@@ -299,7 +330,7 @@ mediaRoutes.get("/images/:imgPath{.+}", async (c) => {
     );
   }
 
-  if (shouldTryCache) {
+  if (shouldPersistMiss) {
     const [toKvRaw, toClient] = upstream.body.tee();
 
     c.executionCtx.waitUntil(
