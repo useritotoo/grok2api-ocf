@@ -448,6 +448,8 @@
     "autoFollowDesc": "滚动到最新",
     "autoSave": "自动保存",
     "autoSaveDesc": "自动保存图片",
+    "infiniteMode": "无限模式",
+    "infiniteModeDesc": "开启后最多连续生成 10 轮",
     "aspectRatio": "宽高比",
     "ratio2_3": "2:3 竖图",
     "ratio1_1": "1:1 方图",

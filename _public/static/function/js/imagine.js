@@ -10,6 +10,7 @@
   const selectImageFileBtn = document.getElementById('selectImageFileBtn');
   const ratioSelect = document.getElementById('ratioSelect');
   const nSelect = document.getElementById('nSelect');
+  const infiniteModeToggle = document.getElementById('infiniteModeToggle');
   const autoScrollToggle = document.getElementById('autoScrollToggle');
   const autoDownloadToggle = document.getElementById('autoDownloadToggle');
   const reverseInsertToggle = document.getElementById('reverseInsertToggle');
@@ -291,19 +292,22 @@
     return manualUrl || '';
   }
 
-  async function createImagineTask(prompt, ratio, authHeader, nsfwEnabled, referenceUrl, n) {
+  async function createImagineTask(prompt, ratio, authHeader, nsfwEnabled, referenceUrl, n, infiniteMode) {
     const payload = (window.FunctionPayloads && typeof FunctionPayloads.buildImagineStartPayload === 'function')
       ? FunctionPayloads.buildImagineStartPayload({
           prompt,
           aspectRatio: ratio,
           nsfw: nsfwEnabled,
           referenceUrl,
-          n
+          n,
+          infiniteMode
         })
       : {
           prompt,
           aspect_ratio: ratio,
           nsfw: nsfwEnabled,
+          n,
+          infinite_mode: !!infiniteMode,
           image_reference: referenceUrl ? { image_url: referenceUrl } : undefined
         };
     const res = await fetch('/v1/function/imagine/start', {
@@ -322,8 +326,8 @@
     return data && data.task_id ? String(data.task_id) : '';
   }
 
-  async function createImagineTasks(prompt, ratio, n, authHeader, nsfwEnabled, referenceUrl) {
-    const taskId = await createImagineTask(prompt, ratio, authHeader, nsfwEnabled, referenceUrl, n);
+  async function createImagineTasks(prompt, ratio, n, authHeader, nsfwEnabled, referenceUrl, infiniteMode) {
+    const taskId = await createImagineTask(prompt, ratio, authHeader, nsfwEnabled, referenceUrl, n, infiniteMode);
     if (!taskId) {
       throw new Error('Missing task id');
     }
@@ -644,6 +648,12 @@
           return;
         }
         setStatus('', t('common.stopped'));
+        setButtons(false);
+        startBtn.disabled = false;
+        isRunning = false;
+        currentTaskIds = [];
+        currentReferenceUrl = '';
+        updateModeValue();
       }
     } else if (data.type === 'error' || data.error) {
       const message = data.message || (data.error && data.error.message) || t('common.generationFailed');
@@ -731,6 +741,12 @@
 
       es.onerror = () => {
         updateActive();
+        if (!isRunning) {
+          setButtons(false);
+          startBtn.disabled = false;
+          updateModeValue();
+          return;
+        }
         const remaining = sseConnections.filter(e => e && e.readyState === EventSource.OPEN).length;
         if (remaining === 0) {
           setStatus('error', t('common.connectionError'));
@@ -763,6 +779,7 @@
     const n = nSelect ? (parseInt(nSelect.value, 10) || 4) : 4;
     const ratio = ratioSelect ? ratioSelect.value : '2:3';
     const nsfwEnabled = nsfwSelect ? nsfwSelect.value === 'true' : true;
+    const infiniteModeEnabled = infiniteModeToggle ? infiniteModeToggle.checked : false;
     
     if (isRunning) {
       toast(t('common.alreadyRunning'), 'warning');
@@ -783,7 +800,7 @@
     try {
       referenceUrl = await resolveReferenceImage(authHeader);
       currentReferenceUrl = referenceUrl;
-      taskIds = await createImagineTasks(prompt, ratio, n, authHeader, nsfwEnabled, referenceUrl);
+      taskIds = await createImagineTasks(prompt, ratio, n, authHeader, nsfwEnabled, referenceUrl, infiniteModeEnabled);
     } catch (e) {
       setStatus('error', t('common.createTaskFailed'));
       startBtn.disabled = false;
@@ -853,6 +870,12 @@
         }
         const remaining = wsConnections.filter(w => w && w.readyState === WebSocket.OPEN).length;
         if (remaining === 0 && !fallbackDone) {
+          if (!isRunning) {
+            setButtons(false);
+            startBtn.disabled = false;
+            updateModeValue();
+            return;
+          }
           setStatus('', t('common.notConnected'));
           setButtons(false);
           isRunning = false;
@@ -889,12 +912,14 @@
     const ratio = ratioSelect ? ratioSelect.value : '2:3';
     const nsfwEnabled = nsfwSelect ? nsfwSelect.value === 'true' : true;
     const nVal = nSelect ? (parseInt(nSelect.value, 10) || 4) : 4;
+    const infiniteModeEnabled = infiniteModeToggle ? infiniteModeToggle.checked : false;
     const payload = {
       type: 'start',
       prompt,
       aspect_ratio: ratio,
       nsfw: nsfwEnabled,
       n: nVal,
+      infinite_mode: infiniteModeEnabled,
       ...(currentReferenceUrl ? { image_reference: { image_url: currentReferenceUrl } } : {})
     };
     ws.send(JSON.stringify(payload));

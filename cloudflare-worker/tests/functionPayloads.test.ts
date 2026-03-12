@@ -13,6 +13,8 @@ test("buildImagineStartPayload includes image_reference when a reference url is 
     prompt: "Turn this sketch into a polished poster",
     aspectRatio: "1:1",
     nsfw: false,
+    n: 5,
+    infiniteMode: true,
     referenceUrl: "/images/upload-ref.png",
   });
 
@@ -20,6 +22,8 @@ test("buildImagineStartPayload includes image_reference when a reference url is 
     prompt: "Turn this sketch into a polished poster",
     aspect_ratio: "1:1",
     nsfw: false,
+    n: 5,
+    infinite_mode: true,
     image_reference: {
       image_url: "/images/upload-ref.png",
     },

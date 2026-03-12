@@ -448,6 +448,8 @@
     "autoFollowDesc": "Scroll to latest",
     "autoSave": "Auto Save",
     "autoSaveDesc": "Auto-save images",
+    "infiniteMode": "Infinite Mode",
+    "infiniteModeDesc": "Continue generating for up to 10 rounds",
     "aspectRatio": "Aspect Ratio",
     "ratio2_3": "2:3 Portrait",
     "ratio1_1": "1:1 Square",

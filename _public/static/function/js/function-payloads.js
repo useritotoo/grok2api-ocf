@@ -26,6 +26,9 @@
         payload.n = nVal;
       }
     }
+    if (args && typeof args.infiniteMode !== "undefined") {
+      payload.infinite_mode = Boolean(args.infiniteMode);
+    }
     const imageReference = buildImageReference(args && args.referenceUrl);
     if (imageReference) {
       payload.image_reference = imageReference;

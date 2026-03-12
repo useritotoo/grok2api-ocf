@@ -37,6 +37,8 @@ test("buildImagineEditFormData reuses uploaded reference images from KV without 
         aspect_ratio: "1:1",
         nsfw: null,
         image_reference: "/images/upload-demo.png",
+        n: 5,
+        infinite_mode: false,
       },
     );
 
@@ -46,6 +48,7 @@ test("buildImagineEditFormData reuses uploaded reference images from KV without 
     assert.equal(file.name, "reference.png");
     assert.equal(file.type, "image/png");
     assert.equal(await file.text(), "demo-image");
+    assert.equal(form.get("n"), "5");
     assert.equal(form.get("size"), "1024x1024");
   } finally {
     globalThis.fetch = originalFetch;

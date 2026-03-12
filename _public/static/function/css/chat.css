@@ -969,6 +969,15 @@ body.chat-lightbox-open {
     align-items: flex-start;
   }
 
+  .model-chip {
+    gap: 4px;
+    padding: 6px 8px;
+  }
+
+  .model-chip .model-label {
+    display: none;
+  }
+
   .settings-panel {
     right: auto;
     left: 0;

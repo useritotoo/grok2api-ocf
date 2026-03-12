@@ -29,6 +29,8 @@ interface ImagineSessionPayload {
   aspect_ratio: string;
   nsfw: boolean | null;
   image_reference: string | null;
+  n: number;
+  infinite_mode: boolean;
 }
 
 interface VideoSessionPayload {
@@ -101,6 +103,38 @@ function normalizeVideoLength(input: unknown): number {
   const value = Math.floor(Number(input ?? 6));
   if (!Number.isFinite(value)) return 6;
   return Math.min(30, Math.max(6, value));
+}
+
+const DEFAULT_IMAGINE_BATCH_SIZE = 6;
+const MAX_IMAGINE_BATCH_SIZE = 6;
+export const MAX_IMAGINE_INFINITE_BATCHES = 10;
+
+function normalizeImagineCount(input: unknown): number {
+  const value = Math.floor(Number(input ?? DEFAULT_IMAGINE_BATCH_SIZE));
+  if (!Number.isFinite(value)) return DEFAULT_IMAGINE_BATCH_SIZE;
+  return Math.min(MAX_IMAGINE_BATCH_SIZE, Math.max(1, value));
+}
+
+function normalizeImagineInfiniteMode(input: unknown): boolean {
+  return parseBoolean(input) === true;
+}
+
+function buildImagineSessionPayload(input: {
+  prompt: unknown;
+  aspect_ratio: unknown;
+  nsfw: unknown;
+  image_reference: unknown;
+  n: unknown;
+  infinite_mode: unknown;
+}): ImagineSessionPayload {
+  return {
+    prompt: String(input.prompt ?? "").trim(),
+    aspect_ratio: normalizeImagineAspectRatio(String(input.aspect_ratio ?? "2:3")),
+    nsfw: parseBoolean(input.nsfw),
+    image_reference: extractImageReference(input.image_reference),
+    n: normalizeImagineCount(input.n),
+    infinite_mode: normalizeImagineInfiniteMode(input.infinite_mode),
+  };
 }
 
 function normalizeResolution(input: unknown): "480p" | "720p" {
@@ -365,12 +399,16 @@ export function buildImagineGenerationBody(payload: ImagineSessionPayload): Reco
   return {
     model: resolveImagineGenerationTarget(payload.image_reference).model,
     prompt: payload.prompt,
-    n: 6,
+    n: payload.n,
     stream: false,
     response_format: "b64_json",
     size: chooseImageSizeFromAspectRatio(payload.aspect_ratio),
     concurrency: 1,
   };
+}
+
+export function resolveImagineBatchLimit(payload: Pick<ImagineSessionPayload, "infinite_mode">): number {
+  return payload.infinite_mode ? MAX_IMAGINE_INFINITE_BATCHES : 1;
 }
 
 function normalizeImagineReferenceMime(input: unknown): string {
@@ -449,7 +487,7 @@ export async function buildImagineEditFormData(
   const form = new FormData();
   form.set("model", resolveImagineGenerationTarget(payload.image_reference).model);
   form.set("prompt", payload.prompt);
-  form.set("n", "6");
+  form.set("n", String(payload.n));
   form.set("response_format", "b64_json");
   form.set("size", chooseImageSizeFromAspectRatio(payload.aspect_ratio));
   form.append("image", file, file.name);
@@ -551,7 +589,7 @@ async function runImagineWsBatch(args: {
   try {
     await collectImagineWsImages({
       prompt: args.payload.prompt,
-      n: 6,
+      n: args.payload.n,
       cookie,
       settings: settingsBundle.grok,
       aspectRatio: args.payload.aspect_ratio,
@@ -609,6 +647,8 @@ async function runImagineLoop(args: {
   const runId = crypto.randomUUID().replaceAll("-", "");
   let sequence = 0;
   let failures = 0;
+  let batchesCompleted = 0;
+  const batchLimit = resolveImagineBatchLimit(args.payload);
 
   const safeSend = async (payload: Record<string, unknown>): Promise<boolean> => {
     try {
@@ -630,8 +670,9 @@ async function runImagineLoop(args: {
     return;
   }
 
-  while (await args.isActive()) {
+  while (batchesCompleted < batchLimit && await args.isActive()) {
     const batchStart = Date.now();
+    batchesCompleted += 1;
     try {
       if (!args.payload.image_reference) {
         await runImagineWsBatch({
@@ -817,21 +858,26 @@ functionRoutes.post("/v1/function/imagine/start", async (c) => {
     return c.json({ error: "Prompt cannot be empty", code: "invalid_prompt" }, 400);
   }
 
-  const aspectRatio = normalizeImagineAspectRatio(String(body.aspect_ratio ?? "2:3"));
-  const nsfw = parseBoolean(body.nsfw);
-  const imageReference = extractImageReference(body.image_reference);
+  const imaginePayload = buildImagineSessionPayload({
+    prompt,
+    aspect_ratio: body.aspect_ratio,
+    nsfw: body.nsfw,
+    image_reference: body.image_reference,
+    n: body.n,
+    infinite_mode: body.infinite_mode,
+  });
   const now = Date.now();
   const taskId = crypto.randomUUID().replaceAll("-", "");
 
   await upsertFunctionSession<ImagineSessionPayload>(c.env.DB, {
     task_id: taskId,
     kind: "imagine",
-    payload: { prompt, aspect_ratio: aspectRatio, nsfw, image_reference: imageReference },
+    payload: imaginePayload,
     created_at: now,
     expires_at: now + FUNCTION_SESSION_TTL_MS,
   });
 
-  return c.json({ task_id: taskId, aspect_ratio: aspectRatio });
+  return c.json({ task_id: taskId, aspect_ratio: imaginePayload.aspect_ratio });
 });
 
 functionRoutes.post("/v1/function/imagine/stop", async (c) => {
@@ -846,6 +892,7 @@ functionRoutes.get("/v1/function/imagine/sse", async (c) => {
   if (!session) {
     return c.json({ error: "Task not found", code: "TASK_NOT_FOUND" }, 404);
   }
+  const sessionPayload = buildImagineSessionPayload(session.payload);
 
   const encoder = new TextEncoder();
 
@@ -868,7 +915,7 @@ functionRoutes.get("/v1/function/imagine/sse", async (c) => {
       try {
         await runImagineLoop({
           c,
-          payload: session.payload,
+          payload: sessionPayload,
           isActive: async () => {
             if (!active || rawSignal.aborted) return false;
             const stillExists = await getFunctionSession<ImagineSessionPayload>(
@@ -906,10 +953,11 @@ functionRoutes.get("/v1/function/imagine/ws", async (c) => {
   }
 
   const taskId = String(c.req.query("task_id") ?? "").trim();
-  const session = taskId
+  const sessionRecord = taskId
     ? await getFunctionSession<ImagineSessionPayload>(c.env.DB, taskId, "imagine")
     : null;
-  if (taskId && !session) {
+  const sessionPayload = sessionRecord ? buildImagineSessionPayload(sessionRecord.payload) : null;
+  if (taskId && !sessionPayload) {
     return c.json({ error: "Task not found", code: "TASK_NOT_FOUND" }, 404);
   }
 
@@ -980,20 +1028,20 @@ functionRoutes.get("/v1/function/imagine/ws", async (c) => {
       return;
     }
 
-    const prompt = String(payload.prompt ?? session?.payload.prompt ?? "").trim();
+    const prompt = String(payload.prompt ?? sessionPayload?.prompt ?? "").trim();
     if (!prompt) {
       send({ type: "error", message: "Prompt cannot be empty.", code: "invalid_prompt" });
       return;
     }
 
-    const imaginePayload: ImagineSessionPayload = {
+    const imaginePayload = buildImagineSessionPayload({
       prompt,
-      aspect_ratio: normalizeImagineAspectRatio(
-        String(payload.aspect_ratio ?? session?.payload.aspect_ratio ?? "2:3"),
-      ),
-      nsfw: parseBoolean(payload.nsfw ?? session?.payload.nsfw),
-      image_reference: extractImageReference(payload.image_reference) ?? session?.payload.image_reference ?? null,
-    };
+      aspect_ratio: payload.aspect_ratio ?? sessionPayload?.aspect_ratio ?? "2:3",
+      nsfw: payload.nsfw ?? sessionPayload?.nsfw,
+      image_reference: payload.image_reference ?? sessionPayload?.image_reference ?? null,
+      n: payload.n ?? sessionPayload?.n,
+      infinite_mode: payload.infinite_mode ?? sessionPayload?.infinite_mode,
+    });
     startLoop(imaginePayload);
   });
 
