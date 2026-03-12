@@ -888,11 +888,13 @@
     const prompt = promptOverride || (promptInput ? promptInput.value.trim() : '');
     const ratio = ratioSelect ? ratioSelect.value : '2:3';
     const nsfwEnabled = nsfwSelect ? nsfwSelect.value === 'true' : true;
+    const nVal = nSelect ? (parseInt(nSelect.value, 10) || 4) : 4;
     const payload = {
       type: 'start',
       prompt,
       aspect_ratio: ratio,
       nsfw: nsfwEnabled,
+      n: nVal,
       ...(currentReferenceUrl ? { image_reference: { image_url: currentReferenceUrl } } : {})
     };
     ws.send(JSON.stringify(payload));

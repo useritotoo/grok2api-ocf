@@ -19,6 +19,13 @@
       aspect_ratio: String((args && args.aspectRatio) || "2:3").trim() || "2:3",
       nsfw: Boolean(args && args.nsfw),
     };
+    const n = args && args.n;
+    if (n != null) {
+      const nVal = parseInt(n, 10);
+      if (Number.isFinite(nVal) && nVal >= 1) {
+        payload.n = nVal;
+      }
+    }
     const imageReference = buildImageReference(args && args.referenceUrl);
     if (imageReference) {
       payload.image_reference = imageReference;
