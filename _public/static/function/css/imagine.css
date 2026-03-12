@@ -116,18 +116,17 @@
 
 .imagine-textarea {
   height: auto;
-  min-height: 0;
+  min-height: 130px;
   resize: vertical;
   line-height: 1.5;
   flex: 1;
 }
 
 .settings-grid {
-  --row-gap: 10px;
-  --row-h: 52px;
+  --row-gap: 12px;
   display: grid;
   grid-template-columns: 2.2fr 1fr;
-  grid-template-rows: calc(var(--row-h) * 2 + var(--row-gap)) var(--row-h) auto var(--row-h);
+  grid-template-rows: repeat(4, auto);
   column-gap: 16px;
   row-gap: var(--row-gap);
   align-items: stretch;
@@ -147,44 +146,26 @@
 
 .settings-block-duo {
   grid-column: 2;
-  grid-row: 1;
-  height: 100%;
+  grid-row: 1 / span 4;
   display: grid;
-  grid-template-rows: 1fr 1fr;
+  grid-template-rows: repeat(4, 1fr);
   gap: 10px;
 }
 
-.settings-block-row2 {
-  grid-column: 1;
-  grid-row: 2;
-}
-
-.settings-block-row2b {
-  grid-column: 2;
-  grid-row: 2;
-}
 
 .settings-block-row3 {
   grid-column: 1;
   grid-row: 4;
 }
 
-.settings-block-row3b {
-  grid-column: 2;
-  grid-row: 4;
-}
-
 .settings-block-reference {
-  /* 
-  grid-column: 1 / span 2;
-  grid-row: 3;
-  */
+  grid-column: 1;
+  grid-row: 2;
 }
 
-.settings-block-single {
-  height: 100%;
-  align-self: stretch;
-  justify-content: stretch;
+.settings-block-row2 {
+  grid-column: 1;
+  grid-row: 3;
 }
 
 .settings-prompt {
