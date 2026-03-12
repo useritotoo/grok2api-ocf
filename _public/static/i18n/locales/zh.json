@@ -436,8 +436,8 @@
     "toolDefault": "工具"
   },
   "imagine": {
-    "pageTitle": "Grok2API - Imagine 瀑布流",
-    "title": "Imagine 瀑布流",
+    "pageTitle": "Grok2API - Imagine 绘图",
+    "title": "Imagine 绘图",
     "subtitle": "通过 WebSocket 持续生成图片，实时展示 base64 瀑布流。",
     "genSettings": "生成设置",
     "prompt": "提示词",
@@ -477,7 +477,7 @@
     "gallery": "瀑布流",
     "waitingTitle": "等待连接中",
     "waitingSubtitle": "启动任务后，生成的图片会自动汇聚到这里",
-    "start": "开始",
+    "start": "开始生成",
     "batch": "批量",
     "batchDownloadTitle": "批量下载",
     "selectAll": "全选",

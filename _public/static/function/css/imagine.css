@@ -106,39 +106,12 @@
   padding: 12px 20px;
 }
 
-.floating-actions {
-  position: fixed;
-  bottom: 32px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 20;
-  background: #fff;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  padding: 8px 12px;
+.settings-actions {
   display: flex;
   align-items: center;
-  gap: 12px;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
-  cursor: move;
-  user-select: none;
-  white-space: nowrap;
-}
-
-.floating-actions:active {
-  cursor: grabbing;
-}
-
-.shadow-xl {
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.2) !important;
-}
-
-.toolbar-sep {
-  display: inline-block;
-  width: 1px;
-  height: 14px;
-  background: var(--border);
-  margin: 0 6px;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 16px;
 }
 
 .imagine-textarea {
@@ -375,6 +348,17 @@
   .reference-actions .geist-button-outline {
     flex: 1;
   }
+
+  .settings-actions {
+    justify-content: flex-start;
+    width: 100%;
+  }
+
+  .settings-actions .geist-button,
+  .settings-actions .geist-button-outline {
+    flex: 1;
+    justify-content: center;
+  }
 }
 
 
@@ -397,11 +381,15 @@
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
-.batch-download-btn {
-  height: 28px;
-  padding: 0 10px;
+.batch-action-btn,
+.batch-download-btn,
+.selection-toolbar .geist-button-outline {
+  height: 32px;
+  padding: 0 12px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -409,8 +397,11 @@
   transition: all 0.2s;
   color: var(--fg);
   flex-shrink: 0;
+  gap: 6px;
+  white-space: nowrap;
 }
 
+.batch-action-btn svg,
 .batch-download-btn svg {
   width: 14px;
   height: 14px;
@@ -431,8 +422,6 @@
 }
 
 .selection-toolbar .geist-button-outline {
-  height: 28px;
-  padding: 0 10px;
   font-size: 12px;
 }
 

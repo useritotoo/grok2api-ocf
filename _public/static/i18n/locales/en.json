@@ -477,7 +477,7 @@
     "gallery": "Gallery",
     "waitingTitle": "Waiting for connection",
     "waitingSubtitle": "Generated images will appear here after starting a task",
-    "start": "Start",
+    "start": "Start Generating",
     "batch": "Batch",
     "batchDownloadTitle": "Batch download",
     "selectAll": "Select all",

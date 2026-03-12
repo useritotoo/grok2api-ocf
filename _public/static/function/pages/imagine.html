@@ -4,7 +4,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title data-i18n="imagine.pageTitle">Grok2API - Imagine 瀑布流</title>
+  <title data-i18n="imagine.pageTitle">Grok2API - Imagine 绘图</title>
   <link rel="icon" href="/favicon.ico">
   <script src="https://cdn.tailwindcss.com"></script>
   <link href="/static/common/css/fonts.css?v=1.6.1" rel="stylesheet">
@@ -20,7 +20,7 @@
   <main class="flex-1 container mx-auto max-w-7xl px-6 py-8 fade-in">
     <div class="space-y-6">
         <div>
-          <h2 class="text-2xl font-semibold tracking-tight" data-i18n="imagine.title">Imagine 瀑布流</h2>
+          <h2 class="text-2xl font-semibold tracking-tight" data-i18n="imagine.title">Imagine 绘图</h2>
           <p class="text-[var(--accents-4)] mt-1 text-sm" data-i18n="imagine.subtitle">通过 WebSocket 持续生成图片，实时展示 base64 瀑布流。</p>
         </div>
 
@@ -137,6 +137,22 @@
                 </div>
               </div>
             </div>
+            <div class="settings-actions">
+              <button id="startBtn" class="geist-button gap-2" type="button">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                  stroke-linecap="round" stroke-linejoin="round">
+                  <polygon points="5 3 19 12 5 21 5 3" />
+                </svg>
+                <span data-i18n="imagine.start">开始生成</span>
+              </button>
+              <button id="stopBtn" class="geist-button-outline gap-2 hidden" type="button">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                  stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="5" y="5" width="14" height="14" />
+                </svg>
+                <span data-i18n="common.stop">停止</span>
+              </button>
+            </div>
           </div>
         </div>
 
@@ -179,6 +195,26 @@
         <div class="waterfall-header">
           <div class="card-title" data-i18n="imagine.gallery">瀑布流</div>
           <div class="waterfall-actions">
+            <button id="clearBtn" class="geist-button-outline batch-action-btn" type="button">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round">
+                <path d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+              </svg>
+              <span data-i18n="cache.clear">清空</span>
+            </button>
+            <button id="batchDownloadBtn" class="geist-button-outline batch-action-btn batch-download-btn" type="button" title="批量下载" data-i18n-title="imagine.batchDownloadTitle">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                <polyline points="7 10 12 15 17 10"></polyline>
+                <line x1="12" y1="15" x2="12" y2="3"></line>
+              </svg>
+              <span data-i18n="imagine.batch">批量</span>
+            </button>
+            <div id="selectionToolbar" class="selection-toolbar hidden">
+              <button id="toggleSelectAllBtn" class="geist-button-outline text-xs px-3 gap-1" type="button" data-i18n="imagine.selectAll">全选</button>
+              <button id="downloadSelectedBtn" class="geist-button-outline text-xs px-3 gap-1" type="button"><span data-i18n="imagine.download">下载</span> <span id="selectedCount" class="selected-count">0</span></button>
+            </div>
           </div>
         </div>
         <div id="emptyState" class="imagine-empty">
@@ -208,41 +244,6 @@
       </svg>
     </button>
     <img id="lightboxImg" src="" alt="">
-  </div>
-
-  <div id="floatingActions" class="floating-actions">
-    <button id="startBtn" class="geist-button-outline text-xs px-3 gap-1 border-0 hover:bg-gray-100">
-      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <polygon points="5 3 19 12 5 21 5 3" />
-      </svg>
-      <span data-i18n="imagine.start">开始</span>
-    </button>
-    <button id="stopBtn" class="geist-button-outline text-xs px-3 gap-1 border-0 hover:bg-gray-100 hidden">
-      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <rect x="5" y="5" width="14" height="14" />
-      </svg>
-      <span data-i18n="common.stop">停止</span>
-    </button>
-    <span class="toolbar-sep"></span>
-    <button id="clearBtn" class="geist-button-outline text-xs px-3 gap-1 border-0 hover:bg-red-100">
-      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <path d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-      </svg>
-      <span data-i18n="cache.clear">清空</span>
-    </button>
-    <span class="toolbar-sep"></span>
-    <button id="batchDownloadBtn" class="batch-download-btn geist-button-outline text-xs px-3 gap-1 border-0 hover:bg-gray-100" title="批量下载" data-i18n-title="imagine.batchDownloadTitle">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-        <polyline points="7 10 12 15 17 10"></polyline>
-        <line x1="12" y1="15" x2="12" y2="3"></line>
-      </svg>
-      <span data-i18n="imagine.batch">批量</span>
-    </button>
-    <div id="selectionToolbar" class="selection-toolbar hidden">
-      <button id="toggleSelectAllBtn" class="geist-button-outline text-xs px-3 gap-1 border-0 hover:bg-gray-100" data-i18n="imagine.selectAll">全选</button>
-      <button id="downloadSelectedBtn" class="geist-button-outline text-xs px-3 gap-1 border-0 hover:bg-gray-100"><span data-i18n="imagine.download">下载</span> <span id="selectedCount" class="selected-count">0</span></button>
-    </div>
   </div>
 
   <div id="app-footer"></div>
