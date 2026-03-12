@@ -175,8 +175,10 @@
 }
 
 .settings-block-reference {
+  /* 
   grid-column: 1 / span 2;
   grid-row: 3;
+  */
 }
 
 .settings-block-single {
