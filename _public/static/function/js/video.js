@@ -68,6 +68,7 @@
   let currentExtendPostId = '';
   let originalFileAttachmentId = '';
   let workVideoObjectUrl = '';
+  let lastRenderedVideoUrl = '';
   const DEFAULT_REASONING_EFFORT = 'low';
   const EDIT_TIMELINE_MAX = 100000;
   const DEFAULT_EXTEND_SECONDS = 10;
@@ -83,6 +84,48 @@
           return uploadFn(file);
         }
       };
+
+  // Blob 缓存管理器：多路复用单点内存，所有 <video> 标签共享同一份 Blob 数据
+  const blobCache = new Map();
+
+  function loadVideoToBlob(originalUrl) {
+    const key = String(originalUrl || '').trim();
+    if (!key || key.startsWith('blob:')) return Promise.resolve(key);
+    const cached = blobCache.get(key);
+    if (cached && cached.blobUrl) return Promise.resolve(cached.blobUrl);
+    if (cached && cached.promise) return cached.promise;
+    const entry = { blobUrl: '', promise: null };
+    entry.promise = fetch(key)
+      .then((res) => {
+        if (!res.ok) throw new Error('blob_fetch_failed');
+        return res.blob();
+      })
+      .then((blob) => {
+        entry.blobUrl = URL.createObjectURL(blob);
+        entry.promise = null;
+        return entry.blobUrl;
+      })
+      .catch((err) => {
+        blobCache.delete(key);
+        throw err;
+      });
+    blobCache.set(key, entry);
+    return entry.promise;
+  }
+
+  function getBlobUrlSync(originalUrl) {
+    const entry = blobCache.get(String(originalUrl || '').trim());
+    return entry && entry.blobUrl ? entry.blobUrl : '';
+  }
+
+  function revokeAllBlobCache() {
+    blobCache.forEach((entry) => {
+      if (entry.blobUrl) {
+        try { URL.revokeObjectURL(entry.blobUrl); } catch (e) { /* ignore */ }
+      }
+    });
+    blobCache.clear();
+  }
 
   function toast(message, type) {
     if (typeof showToast === 'function') {
@@ -366,6 +409,7 @@
     progressBuffer = '';
     contentBuffer = '';
     collectingContent = false;
+    lastRenderedVideoUrl = '';
     lastProgress = 0;
     currentPreviewItem = null;
     updateProgress(0);
@@ -650,8 +694,22 @@
       }
       if (safeUrl) {
         if (shouldReload) {
-          editVideo.src = safeUrl;
-          editVideo.load();
+          // 多路复用：优先使用 Blob 缓存，避免重复网络请求
+          const cachedBlobUrl = getBlobUrlSync(safeUrl);
+          if (cachedBlobUrl) {
+            editVideo.src = cachedBlobUrl;
+            editVideo.load();
+          } else {
+            loadVideoToBlob(safeUrl).then((blobUrl) => {
+              if (selectedVideoUrl === safeUrl) {
+                editVideo.src = blobUrl;
+                editVideo.load();
+              }
+            }).catch(() => {
+              editVideo.src = safeUrl;
+              editVideo.load();
+            });
+          }
         }
       } else {
         if (currentWorkspaceUrl) {
@@ -1141,7 +1199,80 @@
     return null;
   }
 
+  function extractVideoUrlFromAnyText(text) {
+    const raw = String(text || '').trim();
+    if (!raw) return '';
+    const sourceMatch = raw.match(/<source[^>]*\ssrc=["']([^"']+)["']/i);
+    if (sourceMatch && sourceMatch[1]) {
+      return normalizeMediaUrl(sourceMatch[1]);
+    }
+    const videoMatch = raw.match(/<video[^>]*\ssrc=["']([^"']+)["']/i);
+    if (videoMatch && videoMatch[1]) {
+      return normalizeMediaUrl(videoMatch[1]);
+    }
+    const anchorMatch = raw.match(/<a[^>]*\shref=["']([^"']+)["']/i);
+    if (anchorMatch && anchorMatch[1]) {
+      return normalizeMediaUrl(anchorMatch[1]);
+    }
+    const info = extractVideoInfo(raw);
+    if (info && info.url) {
+      return normalizeMediaUrl(info.url);
+    }
+    const directMatch = raw.match(/https?:\/\/[^\s"'<>]+/i);
+    if (directMatch && directMatch[0]) {
+      return normalizeMediaUrl(directMatch[0]);
+    }
+    const localMatch = raw.match(/\/images\/[^\s"'<>]+/i);
+    if (localMatch && localMatch[0]) {
+      return normalizeMediaUrl(localMatch[0]);
+    }
+    return '';
+  }
+
+  function buildCurrentVideoRenderOptions() {
+    return {
+      extendPostId: currentExtendPostId,
+      rootAttachmentId: currentRunKind === 'splice'
+        ? (originalFileAttachmentId || currentExtendPostId)
+        : undefined
+    };
+  }
+
+  function getCurrentPreviewUrl() {
+    if (!currentPreviewItem) return '';
+    return String(currentPreviewItem.dataset.url || '').trim();
+  }
+
+  function tryFinalizeSpliceResult(rawText) {
+    if (currentRunKind !== 'splice') {
+      return Boolean(getCurrentPreviewUrl());
+    }
+    if (getCurrentPreviewUrl()) {
+      return true;
+    }
+    const combined = [contentBuffer, String(rawText || '').trim()]
+      .filter(Boolean)
+      .join('\n');
+    if (!combined) {
+      return false;
+    }
+    const info = extractVideoInfo(combined);
+    if (info && info.html) {
+      renderVideoFromHtml(info.html, buildCurrentVideoRenderOptions());
+    } else {
+      const resolvedUrl = extractVideoUrlFromAnyText(combined);
+      if (resolvedUrl) {
+        renderVideoFromUrl(resolvedUrl, buildCurrentVideoRenderOptions());
+      }
+    }
+    return Boolean(getCurrentPreviewUrl());
+  }
+
   function renderVideoFromHtml(html, options) {
+    // SSE 流去重：预提取 URL，相同则跳过渲染
+    const srcMatch = html.match(/src=["']([^"']+)["']/);
+    const preExtractUrl = srcMatch ? srcMatch[1] : '';
+    if (preExtractUrl && preExtractUrl === lastRenderedVideoUrl) return;
     const container = ensurePreviewSlot(currentRunKind);
     if (!container) return;
     const body = container.querySelector('.video-item-body');
@@ -1155,26 +1286,61 @@
       const source = videoEl.querySelector('source');
       if (source && source.getAttribute('src')) {
         videoUrl = source.getAttribute('src');
+        source.removeAttribute('src'); // 阻止浏览器自动发起原始 URL 请求
       } else if (videoEl.getAttribute('src')) {
         videoUrl = videoEl.getAttribute('src');
+        videoEl.removeAttribute('src');
       }
     }
+    if (videoUrl) lastRenderedVideoUrl = videoUrl;
     updateItemLinks(container, videoUrl, options);
     if (videoUrl) {
-      syncWorkspaceFromPreview(container);
+      // 多路复用：通过 Blob 缓存加载，避免重复网络请求
+      loadVideoToBlob(videoUrl).then((blobUrl) => {
+        if (videoEl) {
+          videoEl.src = blobUrl;
+          videoEl.load();
+        }
+        syncWorkspaceFromPreview(container);
+      }).catch(() => {
+        // 降级：使用原始 URL
+        if (videoEl) {
+          videoEl.src = videoUrl;
+          videoEl.load();
+        }
+        syncWorkspaceFromPreview(container);
+      });
     }
   }
 
   function renderVideoFromUrl(url, options) {
+    const safeUrl = url || '';
+    // SSE 流去重：相同 URL 不重复渲染，避免高频 DOM 撕裂导致视频反复请求
+    if (safeUrl && safeUrl === lastRenderedVideoUrl) return;
+    if (safeUrl) lastRenderedVideoUrl = safeUrl;
     const container = ensurePreviewSlot(currentRunKind);
     if (!container) return;
-    const safeUrl = url || '';
     const body = container.querySelector('.video-item-body');
     if (!body) return;
-    body.innerHTML = `\n      <video controls preload="metadata">\n        <source src="${safeUrl}" type="video/mp4">\n      </video>\n    `;
+    // 先挂占位 video 元素，不设置 src 避免浏览器发起原始 URL 请求
+    body.innerHTML = `\n      <video controls preload="metadata">\n        <source src="" type="video/mp4">\n      </video>\n    `;
     updateItemLinks(container, safeUrl, options);
     if (safeUrl) {
-      syncWorkspaceFromPreview(container);
+      // 多路复用：通过 Blob 缓存加载
+      loadVideoToBlob(safeUrl).then((blobUrl) => {
+        const sourceEl = body.querySelector('source');
+        const videoEl = body.querySelector('video');
+        if (sourceEl) sourceEl.src = blobUrl;
+        if (videoEl) videoEl.load();
+        syncWorkspaceFromPreview(container);
+      }).catch(() => {
+        // 降级：使用原始 URL
+        const sourceEl = body.querySelector('source');
+        const videoEl = body.querySelector('video');
+        if (sourceEl) sourceEl.src = safeUrl;
+        if (videoEl) videoEl.load();
+        syncWorkspaceFromPreview(container);
+      });
     }
   }
 
@@ -1244,19 +1410,9 @@
       const info = extractVideoInfo(contentBuffer);
       if (info) {
         if (info.html) {
-          renderVideoFromHtml(info.html, {
-            extendPostId: currentExtendPostId,
-            rootAttachmentId: currentRunKind === 'splice'
-              ? (originalFileAttachmentId || currentExtendPostId)
-              : undefined
-          });
+          renderVideoFromHtml(info.html, buildCurrentVideoRenderOptions());
         } else if (info.url) {
-          renderVideoFromUrl(info.url, {
-            extendPostId: currentExtendPostId,
-            rootAttachmentId: currentRunKind === 'splice'
-              ? (originalFileAttachmentId || currentExtendPostId)
-              : undefined
-          });
+          renderVideoFromUrl(info.url, buildCurrentVideoRenderOptions());
         }
       }
       return;
@@ -1311,13 +1467,13 @@
 
   async function startConnection() {
     if (isRunning) {
-      toast(tSafe('video.alreadyGenerating', '已有任务正在运行。'), 'warning');
+      toast(tSafe('video.alreadyGenerating', 'Task already running.'), 'warning');
       return;
     }
 
     const authHeader = await ensureFunctionKey();
     if (authHeader === null) {
-      toast(tSafe('common.configurePublicKey', '请先配置 Function Key。'), 'error');
+      toast(tSafe('common.configurePublicKey', 'Configure Function Key first.'), 'error');
       window.location.href = '/login';
       return;
     }
@@ -1330,7 +1486,7 @@
       return;
     }
     if (!prompt && !imageUrls.length) {
-      toast(tSafe('common.enterPrompt', '请输入提示词，或提供参考图。'), 'error');
+      toast(tSafe('common.enterPrompt', 'Enter a prompt or add a reference image.'), 'error');
       return;
     }
 
@@ -1340,7 +1496,7 @@
     updateMeta();
     resetOutput(true);
     initPreviewSlot(currentRunKind);
-    setStatus('connecting', tSafe('common.connecting', '连接中'));
+    setStatus('connecting', tSafe('common.connecting', 'Connecting'));
 
     const payload = (window.FunctionPayloads && typeof FunctionPayloads.buildVideoStartPayload === 'function')
       ? FunctionPayloads.buildVideoStartPayload({
@@ -1366,7 +1522,7 @@
     try {
       taskId = await createVideoTask(authHeader, payload);
     } catch (e) {
-      setStatus('error', tSafe('common.createTaskFailed', '创建任务失败'));
+      setStatus('error', tSafe('common.createTaskFailed', 'Failed to create task.'));
       isRunning = false;
       syncStartButtonAvailability();
       return;
@@ -1374,7 +1530,7 @@
 
     currentTaskId = taskId;
     startAt = Date.now();
-    setStatus('connected', tSafe('common.generating', '生成中'));
+    setStatus('connected', tSafe('common.generating', 'Generating'));
     setButtons(true);
     setIndeterminate(true);
     syncTimelineAvailability();
@@ -1387,7 +1543,7 @@
     currentSource = es;
 
     es.onopen = () => {
-      setStatus('connected', tSafe('common.generating', '生成中'));
+      setStatus('connected', tSafe('common.generating', 'Generating'));
     };
 
     es.onmessage = (event) => {
@@ -1396,19 +1552,19 @@
         finishRun();
         return;
       }
-      let payload = null;
+      let payloadObject = null;
       try {
-        payload = JSON.parse(event.data);
+        payloadObject = JSON.parse(event.data);
       } catch (e) {
         return;
       }
-      if (payload && payload.error) {
-        toast(payload.error, 'error');
-        setStatus('error', tSafe('common.generationFailed', '生成失败'));
+      if (payloadObject && payloadObject.error) {
+        toast(payloadObject.error, 'error');
+        setStatus('error', tSafe('common.generationFailed', 'Generation failed.'));
         finishRun(true);
         return;
       }
-      const choice = payload.choices && payload.choices[0];
+      const choice = payloadObject && payloadObject.choices ? payloadObject.choices[0] : null;
       const delta = choice && choice.delta ? choice.delta : null;
       if (delta && delta.content) {
         handleDelta(delta.content);
@@ -1420,7 +1576,7 @@
 
     es.onerror = () => {
       if (!isRunning) return;
-      setStatus('error', tSafe('common.connectionError', '连接异常'));
+      setStatus('error', tSafe('common.connectionError', 'Connection error.'));
       finishRun(true);
     };
   }
@@ -1432,21 +1588,21 @@
       return;
     }
     if (isRunning) {
-      toast(tSafe('video.alreadyGenerating', '已有任务正在运行。'), 'warning');
+      toast(tSafe('video.alreadyGenerating', 'Task already running.'), 'warning');
       return;
     }
     if (!selectedVideoUrl) {
-      toast('请先选择一个视频，再执行延长。', 'error');
+      toast('Select a video before extending.', 'error');
       return;
     }
     if (!currentExtendPostId) {
-      toast('当前视频没有可用的延长 ID，请从历史或缓存中重新选择视频。', 'error');
+      toast('Missing extend post id for current video.', 'error');
       return;
     }
 
     const authHeader = await ensureFunctionKey();
     if (authHeader === null) {
-      toast(tSafe('common.configurePublicKey', '请先配置 Function Key。'), 'error');
+      toast(tSafe('common.configurePublicKey', 'Configure Function Key first.'), 'error');
       window.location.href = '/login';
       return;
     }
@@ -1457,7 +1613,7 @@
           prompt,
           aspectRatio: ratioSelect ? ratioSelect.value : '3:2',
           videoLength: DEFAULT_EXTEND_SECONDS,
-            resolutionName: resolutionSelect ? resolutionSelect.value : '720p',
+          resolutionName: resolutionSelect ? resolutionSelect.value : '720p',
           preset: prompt ? (presetSelect ? presetSelect.value : 'normal') : 'spicy',
           reasoningEffort: DEFAULT_REASONING_EFFORT,
           extension: {
@@ -1490,13 +1646,13 @@
     resetOutput(true);
     initPreviewSlot(currentRunKind);
     setSpliceButtonState('running');
-    setStatus('connecting', '准备延长任务');
+    setStatus('connecting', 'Preparing extension');
 
     let taskId = '';
     try {
       taskId = await createVideoTask(authHeader, payload);
     } catch (e) {
-      setStatus('error', tSafe('common.createTaskFailed', '创建任务失败'));
+      setStatus('error', tSafe('common.createTaskFailed', 'Failed to create task.'));
       isRunning = false;
       syncStartButtonAvailability();
       setSpliceButtonState('idle');
@@ -1505,7 +1661,7 @@
 
     currentTaskId = taskId;
     startAt = Date.now();
-    setStatus('connected', '延长中');
+    setStatus('connected', 'Extending');
     setButtons(true);
     setIndeterminate(true);
     syncTimelineAvailability();
@@ -1516,15 +1672,22 @@
     closeSource();
     const es = new EventSource(url);
     currentSource = es;
+    let rawEventBuffer = '';
 
     es.onopen = () => {
-      setStatus('connected', '延长中');
+      setStatus('connected', 'Extending');
     };
 
     es.onmessage = (event) => {
       if (!event || !event.data) return;
+      rawEventBuffer += `${String(event.data)}\n`;
       if (event.data === '[DONE]') {
-        finishRun();
+        if (tryFinalizeSpliceResult(rawEventBuffer)) {
+          finishRun();
+        } else {
+          setStatus('error', 'Extension failed');
+          finishRun(true);
+        }
         return;
       }
       let payloadObject = null;
@@ -1535,7 +1698,7 @@
       }
       if (payloadObject && payloadObject.error) {
         toast(payloadObject.error, 'error');
-        setStatus('error', '延长失败');
+        setStatus('error', 'Extension failed');
         finishRun(true);
         return;
       }
@@ -1545,13 +1708,16 @@
         handleDelta(delta.content);
       }
       if (choice && choice.finish_reason === 'stop') {
+        if (!tryFinalizeSpliceResult(rawEventBuffer)) {
+          return;
+        }
         finishRun();
       }
     };
 
     es.onerror = () => {
       if (!isRunning) return;
-      setStatus('error', '连接异常');
+      setStatus('error', 'Connection error.');
       finishRun(true);
     };
   }
@@ -1640,6 +1806,8 @@
         toast('请先停止当前任务，再清空历史视频。', 'warning');
         return;
       }
+      revokeAllBlobCache();
+      lastRenderedVideoUrl = '';
       currentPreviewItem = null;
       previewCount = 0;
       generatedCount = 0;
@@ -1732,13 +1900,16 @@
         const url = item.dataset.url || target.dataset.url || '';
         const index = item.dataset.index || '';
         if (!url) return;
+        // 防连击：立刻禁用并切换状态
+        target.disabled = true;
+        const originalText = target.textContent;
+        target.textContent = '准备中...';
         try {
-          const response = await fetch(url);
-          if (!response.ok) {
-            throw new Error('download_failed');
+          // 优先使用已有的 Blob 缓存，避免重复网络请求
+          let downloadBlobUrl = getBlobUrlSync(url);
+          if (!downloadBlobUrl) {
+            downloadBlobUrl = await loadVideoToBlob(url);
           }
-          const blob = await response.blob();
-          const blobUrl = URL.createObjectURL(blob);
           const anchor = document.createElement('a');
           const postId = extractPostIdFromFileName(url);
           const parts = ['grok_video'];
@@ -1748,14 +1919,21 @@
           if (index) {
             parts.push(index);
           }
-          anchor.href = blobUrl;
+          anchor.href = downloadBlobUrl;
           anchor.download = `${parts.join('_')}.mp4`;
           document.body.appendChild(anchor);
           anchor.click();
           anchor.remove();
-          URL.revokeObjectURL(blobUrl);
+          // 不 revoke Blob URL：它被多路复用中
+          target.textContent = '\u2714 已下载';
+          setTimeout(() => {
+            target.textContent = originalText;
+            target.disabled = false;
+          }, 1500);
         } catch (e) {
           toast(tSafe('video.downloadFailed', '下载失败。'), 'error');
+          target.textContent = originalText;
+          target.disabled = false;
         }
         return;
       }
