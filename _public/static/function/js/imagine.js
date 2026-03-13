@@ -12,6 +12,8 @@
   const ratioSelect = document.getElementById('ratioSelect');
   const nSelect = document.getElementById('nSelect');
   const infiniteModeToggle = document.getElementById('infiniteModeToggle');
+  const concurrentField = document.getElementById('infiniteConcurrentField');
+  const concurrentSelect = document.getElementById('concurrentSelect');
   const autoScrollToggle = document.getElementById('autoScrollToggle');
   const autoDownloadToggle = document.getElementById('autoDownloadToggle');
   const reverseInsertToggle = document.getElementById('reverseInsertToggle');
@@ -35,13 +37,13 @@
   let imageCount = 0;
   let totalLatency = 0;
   let latencyCount = 0;
-  let lastRunId = '';
   let isRunning = false;
   let isStopping = false;
   let connectionMode = 'ws';
   let modePreference = 'auto';
   const MODE_STORAGE_KEY = 'imagine_mode';
   let pendingFallbackTimer = null;
+  let currentTasks = [];
   let currentTaskIds = [];
   let currentReferenceUrls = [];
   let referenceItems = [];
@@ -53,6 +55,7 @@
   let selectedImages = new Set();
   let streamSequence = 0;
   const streamImageMap = new Map();
+  const taskStateMap = new Map();
   let finalMinBytesDefault = 100000;
   const MAX_REFERENCE_FILES = 3;
   const referenceUploadCache = (window.VideoReferenceCache && typeof VideoReferenceCache.createReferenceUploadCache === 'function')
@@ -112,6 +115,229 @@
       return { image_url: values[0] };
     }
     return values.map((url) => ({ image_url: url }));
+  }
+
+  function buildImagineTaskPlan(totalImages, requestedConcurrent, infiniteMode) {
+    if (window.ImagineTaskUtils && typeof window.ImagineTaskUtils.buildImagineTaskPlan === 'function') {
+      return window.ImagineTaskUtils.buildImagineTaskPlan({
+        totalImages,
+        requestedConcurrent,
+        infiniteMode
+      });
+    }
+
+    const normalizedTotal = Math.min(6, Math.max(1, parseInt(totalImages, 10) || 1));
+    const normalizedConcurrent = Math.min(3, Math.max(1, parseInt(requestedConcurrent, 10) || 1));
+    const effectiveConcurrent = infiniteMode ? Math.min(normalizedConcurrent, normalizedTotal) : 1;
+    const baseCount = Math.floor(normalizedTotal / effectiveConcurrent);
+    let remainder = normalizedTotal % effectiveConcurrent;
+    const counts = [];
+
+    for (let index = 0; index < effectiveConcurrent; index += 1) {
+      const count = baseCount + (remainder > 0 ? 1 : 0);
+      if (remainder > 0) {
+        remainder -= 1;
+      }
+      if (count > 0) {
+        counts.push(count);
+      }
+    }
+
+    return {
+      totalImages: normalizedTotal,
+      requestedConcurrent: normalizedConcurrent,
+      effectiveConcurrent: counts.length || 1,
+      counts: counts.length ? counts : [normalizedTotal]
+    };
+  }
+
+  function summarizeImagineTaskStates(taskStates) {
+    if (window.ImagineTaskUtils && typeof window.ImagineTaskUtils.summarizeImagineTaskStates === 'function') {
+      return window.ImagineTaskUtils.summarizeImagineTaskStates(taskStates);
+    }
+
+    const items = Array.isArray(taskStates) ? taskStates : [];
+    let terminalCount = 0;
+    items.forEach((item) => {
+      if (item && (item.status === 'stopped' || item.status === 'error')) {
+        terminalCount += 1;
+      }
+    });
+    const total = items.length;
+    return {
+      total,
+      activeCount: Math.max(0, total - terminalCount),
+      terminalCount,
+      allTerminal: total > 0 && terminalCount === total
+    };
+  }
+
+  function isTerminalTaskStatus(status) {
+    if (window.ImagineTaskUtils && typeof window.ImagineTaskUtils.isTerminalTaskStatus === 'function') {
+      return window.ImagineTaskUtils.isTerminalTaskStatus(status);
+    }
+    return status === 'stopped' || status === 'error';
+  }
+
+  function getRequestedConcurrent() {
+    if (!(infiniteModeToggle && infiniteModeToggle.checked)) {
+      return 1;
+    }
+    return concurrentSelect ? (parseInt(concurrentSelect.value, 10) || 1) : 1;
+  }
+
+  function syncInfiniteConcurrencyVisibility() {
+    const enabled = Boolean(infiniteModeToggle && infiniteModeToggle.checked);
+    if (concurrentField) {
+      concurrentField.classList.toggle('hidden', !enabled);
+      concurrentField.setAttribute('aria-hidden', enabled ? 'false' : 'true');
+    }
+    if (concurrentSelect && !enabled) {
+      concurrentSelect.value = '1';
+    }
+  }
+
+  function registerCurrentTasks(tasks) {
+    currentTasks = Array.isArray(tasks) ? tasks.map((task) => ({ ...task })) : [];
+    currentTaskIds = currentTasks.map((task) => task.taskId);
+    taskStateMap.clear();
+    currentTasks.forEach((task, index) => {
+      taskStateMap.set(task.taskId, {
+        taskId: task.taskId,
+        imageCount: task.imageCount,
+        index,
+        status: 'pending',
+        runId: '',
+        transport: '',
+        connection: null
+      });
+    });
+  }
+
+  function getTaskState(taskId) {
+    if (!taskId) return null;
+    return taskStateMap.get(String(taskId)) || null;
+  }
+
+  function setTaskConnection(taskId, transport, connection) {
+    const state = getTaskState(taskId);
+    if (!state) return;
+    state.transport = transport;
+    state.connection = connection;
+  }
+
+  function clearTaskConnection(taskId) {
+    const state = getTaskState(taskId);
+    if (!state) return;
+    state.connection = null;
+  }
+
+  function removeConnection(list, connection) {
+    const index = list.indexOf(connection);
+    if (index >= 0) {
+      list.splice(index, 1);
+    }
+  }
+
+  function closeTaskConnection(taskId, options = {}) {
+    const state = getTaskState(taskId);
+    if (!state || !state.connection) return;
+    const connection = state.connection;
+    state.connection = null;
+
+    if (state.transport === 'ws') {
+      if (options.sendStop && connection.readyState === WebSocket.OPEN) {
+        try {
+          connection.send(JSON.stringify({ type: 'stop' }));
+        } catch (e) {
+          // ignore
+        }
+      }
+      removeConnection(wsConnections, connection);
+      try {
+        connection.close(1000, options.reason || 'task complete');
+      } catch (e) {
+        // ignore
+      }
+    } else if (state.transport === 'sse') {
+      removeConnection(sseConnections, connection);
+      try {
+        connection.close();
+      } catch (e) {
+        // ignore
+      }
+    }
+
+    updateActive();
+  }
+
+  function markTaskRunning(taskId, runId) {
+    const state = getTaskState(taskId);
+    if (!state) return;
+    state.status = 'running';
+    if (runId) {
+      state.runId = String(runId);
+    }
+  }
+
+  function markTaskStopped(taskId, runId) {
+    const state = getTaskState(taskId);
+    if (!state) return false;
+    const normalizedRunId = runId ? String(runId) : '';
+    if (normalizedRunId && state.runId && state.runId !== normalizedRunId) {
+      return false;
+    }
+    state.status = 'stopped';
+    if (normalizedRunId) {
+      state.runId = normalizedRunId;
+    }
+    return true;
+  }
+
+  function markTaskConnectionError(taskId) {
+    const state = getTaskState(taskId);
+    if (!state || isTerminalTaskStatus(state.status)) {
+      return false;
+    }
+    state.status = 'error';
+    return true;
+  }
+
+  function summarizeCurrentTasks() {
+    return summarizeImagineTaskStates(Array.from(taskStateMap.values()));
+  }
+
+  function finalizeTaskPendingImages(taskId, label) {
+    streamImageMap.forEach((item) => {
+      if (!item) return;
+      if (taskId && item.dataset.taskId !== String(taskId)) {
+        return;
+      }
+      const statusEl = item.querySelector('.image-status');
+      if (statusEl && statusEl.classList.contains('running')) {
+        setImageStatus(item, 'error', label);
+      }
+    });
+  }
+
+  function finishRunIfComplete(state, text) {
+    const summary = summarizeCurrentTasks();
+    updateActive();
+    if (!summary.allTerminal) {
+      return summary;
+    }
+
+    setStatus(state || '', text || t('common.stopped'));
+    setButtons(false);
+    isRunning = false;
+    isStopping = false;
+    currentTasks = [];
+    currentTaskIds = [];
+    currentReferenceUrls = [];
+    taskStateMap.clear();
+    syncStartButtonAvailability();
+    updateModeValue();
+    return summary;
   }
 
   function setStatus(state, text) {
@@ -649,12 +875,29 @@
     return data && data.task_id ? String(data.task_id) : '';
   }
 
-  async function createImagineTasks(prompt, ratio, n, authHeader, nsfwEnabled, referenceUrls, infiniteMode) {
-    const taskId = await createImagineTask(prompt, ratio, authHeader, nsfwEnabled, referenceUrls, n, infiniteMode);
-    if (!taskId) {
-      throw new Error('Missing task id');
+  async function createImagineTasks(prompt, ratio, n, requestedConcurrent, authHeader, nsfwEnabled, referenceUrls, infiniteMode) {
+    const plan = buildImagineTaskPlan(n, requestedConcurrent, infiniteMode);
+    const tasks = [];
+
+    try {
+      for (const imageCount of plan.counts) {
+        const taskId = await createImagineTask(prompt, ratio, authHeader, nsfwEnabled, referenceUrls, imageCount, infiniteMode);
+        if (!taskId) {
+          throw new Error('Missing task id');
+        }
+        tasks.push({
+          taskId,
+          imageCount
+        });
+      }
+    } catch (error) {
+      if (tasks.length > 0) {
+        await stopImagineTasks(tasks.map((task) => task.taskId), authHeader);
+      }
+      throw error;
     }
-    return [taskId];
+
+    return tasks;
   }
 
   async function stopImagineTasks(taskIds, authHeader) {
@@ -805,7 +1048,7 @@
     }
   }
 
-  function upsertStreamImage(raw, meta, imageId, isFinal) {
+  function upsertStreamImage(raw, meta, imageId, isFinal, taskId) {
     if (!waterfall || !raw) return;
     if (emptyState) {
       emptyState.style.display = 'none';
@@ -884,6 +1127,8 @@
       const prompt = (meta && meta.prompt) ? String(meta.prompt) : (promptInput ? promptInput.value.trim() : '');
       item.dataset.imageUrl = dataUrl;
       item.dataset.prompt = prompt || 'image';
+      item.dataset.taskId = taskId ? String(taskId) : '';
+      item.dataset.runId = meta && meta.run_id ? String(meta.run_id) : '';
 
       if (isSelectionMode) {
         item.classList.add('selection-mode');
@@ -907,6 +1152,12 @@
         img.src = dataUrl;
       }
       item.dataset.imageUrl = dataUrl;
+      if (taskId) {
+        item.dataset.taskId = String(taskId);
+      }
+      if (meta && meta.run_id) {
+        item.dataset.runId = String(meta.run_id);
+      }
       const right = item.querySelector('.waterfall-meta .meta-right span:last-child');
       if (right && meta && meta.elapsed_ms) {
         right.textContent = `${meta.elapsed_ms}ms`;
@@ -939,7 +1190,7 @@
     }
   }
 
-  function handleMessage(raw) {
+  function handleMessage(raw, context) {
     let data = null;
     try {
       data = JSON.parse(raw);
@@ -947,6 +1198,7 @@
       return;
     }
     if (!data || typeof data !== 'object') return;
+    const taskId = context && context.taskId ? String(context.taskId) : '';
 
     if (data.type === 'image_generation.partial_image' || data.type === 'image_generation.completed') {
       const imageId = data.image_id || data.imageId;
@@ -955,7 +1207,7 @@
         return;
       }
       const isFinal = data.type === 'image_generation.completed' || data.stage === 'final';
-      upsertStreamImage(payload, data, imageId, isFinal);
+      upsertStreamImage(payload, data, imageId, isFinal, taskId);
     } else if (data.type === 'image') {
       imageCount += 1;
       updateCount(imageCount);
@@ -964,19 +1216,30 @@
       appendImage(data.b64_json, data);
     } else if (data.type === 'status') {
       if (data.status === 'running') {
-        setStatus('connected', t('common.generating'));
-        lastRunId = data.run_id || '';
+        if (taskId) {
+          markTaskRunning(taskId, data.run_id);
+        }
+        setStatus('connected', connectionMode === 'sse' ? t('imagine.generatingSSE') : t('common.generating'));
       } else if (data.status === 'stopped') {
-        if (data.run_id && lastRunId && data.run_id !== lastRunId) {
+        if (!taskId) {
+          finalizeTaskPendingImages('', t('common.stopped'));
+          setStatus('', t('common.stopped'));
+          setButtons(false);
+          isRunning = false;
+          syncStartButtonAvailability();
+          currentTasks = [];
+          currentTaskIds = [];
+          currentReferenceUrls = [];
+          taskStateMap.clear();
+          updateModeValue();
           return;
         }
-        setStatus('', t('common.stopped'));
-        setButtons(false);
-        isRunning = false;
-        syncStartButtonAvailability();
-        currentTaskIds = [];
-        currentReferenceUrls = [];
-        updateModeValue();
+        if (!markTaskStopped(taskId, data.run_id)) {
+          return;
+        }
+        finalizeTaskPendingImages(taskId, t('common.stopped'));
+        closeTaskConnection(taskId, { reason: 'task stopped' });
+        finishRunIfComplete('', t('common.stopped'));
       }
     } else if (data.type === 'error' || data.error) {
       const message = data.message || (data.error && data.error.message) || t('common.generationFailed');
@@ -1014,6 +1277,9 @@
       }
     });
     sseConnections = [];
+    taskStateMap.forEach((state) => {
+      state.connection = null;
+    });
     updateActive();
     updateModeValue();
   }
@@ -1041,42 +1307,52 @@
     return `${base}?${params.toString()}`;
   }
 
-  function startSSE(taskIds, rawPublicKey) {
+  function startSSE(tasks, rawPublicKey) {
     connectionMode = 'sse';
     stopAllConnections();
     updateModeValue();
 
     setStatus('connected', t('imagine.generatingSSE'));
     setButtons(true);
-    toast(t('imagine.startedTasksSSE', { count: taskIds.length }), 'success');
+    toast(t('imagine.startedTasksSSE', { count: tasks.length }), 'success');
 
-    for (let i = 0; i < taskIds.length; i++) {
-      const url = buildSseUrl(taskIds[i], i, rawPublicKey);
+    for (let i = 0; i < tasks.length; i++) {
+      const task = tasks[i];
+      const url = buildSseUrl(task.taskId, i, rawPublicKey);
       const es = new EventSource(url);
+      setTaskConnection(task.taskId, 'sse', es);
 
       es.onopen = () => {
         updateActive();
       };
 
       es.onmessage = (event) => {
-        handleMessage(event.data);
+        handleMessage(event.data, {
+          taskId: task.taskId,
+          transport: 'sse'
+        });
       };
 
       es.onerror = () => {
         updateActive();
-        if (!isRunning) {
-          setButtons(false);
-          syncStartButtonAvailability();
-          updateModeValue();
+        const state = getTaskState(task.taskId);
+        if (!state) {
           return;
         }
-        const remaining = sseConnections.filter(e => e && e.readyState === EventSource.OPEN).length;
-        if (remaining === 0) {
-          setStatus('error', t('common.connectionError'));
-          setButtons(false);
-          isRunning = false;
-          syncStartButtonAvailability();
-          updateModeValue();
+
+        if (!isRunning || isStopping || state.status === 'stopped') {
+          closeTaskConnection(task.taskId, { reason: 'task settled' });
+          finishRunIfComplete('', t('common.stopped'));
+          return;
+        }
+
+        if (es.readyState === EventSource.CLOSED && markTaskConnectionError(task.taskId)) {
+          finalizeTaskPendingImages(task.taskId, t('common.failed'));
+          closeTaskConnection(task.taskId, { reason: 'sse error' });
+          const summary = finishRunIfComplete('error', t('common.connectionError'));
+          if (!summary.allTerminal) {
+            updateModeValue();
+          }
         }
       };
 
@@ -1100,6 +1376,7 @@
     const rawPublicKey = normalizeAuthHeader(authHeader);
 
     const n = nSelect ? (parseInt(nSelect.value, 10) || 4) : 4;
+    const requestedConcurrent = getRequestedConcurrent();
     const ratio = ratioSelect ? ratioSelect.value : '2:3';
     const nsfwEnabled = nsfwSelect ? nsfwSelect.value === 'true' : true;
     const infiniteModeEnabled = infiniteModeToggle ? infiniteModeToggle.checked : false;
@@ -1118,12 +1395,12 @@
       pendingFallbackTimer = null;
     }
 
-    let taskIds = [];
+    let tasks = [];
     let referenceUrls = [];
     try {
       referenceUrls = await resolveReferenceImage();
       currentReferenceUrls = referenceUrls;
-      taskIds = await createImagineTasks(prompt, ratio, n, authHeader, nsfwEnabled, referenceUrls, infiniteModeEnabled);
+      tasks = await createImagineTasks(prompt, ratio, n, requestedConcurrent, authHeader, nsfwEnabled, referenceUrls, infiniteModeEnabled);
     } catch (e) {
       setStatus('error', t('common.createTaskFailed'));
       isRunning = false;
@@ -1131,10 +1408,10 @@
       currentReferenceUrls = [];
       return;
     }
-    currentTaskIds = taskIds;
+    registerCurrentTasks(tasks);
 
     if (modePreference === 'sse') {
-      startSSE(taskIds, rawPublicKey);
+      startSSE(tasks, rawPublicKey);
       return;
     }
 
@@ -1149,7 +1426,7 @@
       fallbackTimer = setTimeout(() => {
         if (!fallbackDone && opened === 0) {
           fallbackDone = true;
-          startSSE(taskIds, rawPublicKey);
+          startSSE(tasks, rawPublicKey);
         }
       }, 1500);
     }
@@ -1157,19 +1434,21 @@
 
     wsConnections = [];
 
-    for (let i = 0; i < taskIds.length; i++) {
+    for (let i = 0; i < tasks.length; i++) {
+      const task = tasks[i];
       const wsUrl = (window.FunctionTransport && typeof FunctionTransport.buildImagineWsUrl === 'function')
         ? FunctionTransport.buildImagineWsUrl({
             protocol: window.location.protocol,
             host: window.location.host,
-            taskId: taskIds[i],
+            taskId: task.taskId,
             functionKey: rawPublicKey
           })
         : `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/v1/function/imagine/ws?${new URLSearchParams({
-            task_id: taskIds[i],
+            task_id: task.taskId,
             ...(rawPublicKey ? { function_key: rawPublicKey } : {})
           }).toString()}`;
       const ws = new WebSocket(wsUrl);
+      setTaskConnection(task.taskId, 'ws', ws);
 
       ws.onopen = () => {
         opened += 1;
@@ -1177,32 +1456,42 @@
         if (i === 0) {
           setStatus('connected', t('common.generating'));
           setButtons(true);
-          toast(t('imagine.startedTasks', { count: concurrent }), 'success');
+          toast(t('imagine.startedTasks', { count: tasks.length }), 'success');
         }
-        sendStart(prompt, ws);
+        sendStart(prompt, ws, task.taskId);
       };
 
       ws.onmessage = (event) => {
-        handleMessage(event.data);
+        handleMessage(event.data, {
+          taskId: task.taskId,
+          transport: 'ws'
+        });
       };
 
       ws.onclose = () => {
+        removeConnection(wsConnections, ws);
+        clearTaskConnection(task.taskId);
         updateActive();
         if (connectionMode !== 'ws') {
           return;
         }
-        const remaining = wsConnections.filter(w => w && w.readyState === WebSocket.OPEN).length;
-        if (remaining === 0 && !fallbackDone) {
-          if (!isRunning) {
-            setButtons(false);
-            syncStartButtonAvailability();
+
+        const state = getTaskState(task.taskId);
+        if (!state) {
+          return;
+        }
+
+        if (isStopping || !isRunning || state.status === 'stopped') {
+          finishRunIfComplete('', t('common.stopped'));
+          return;
+        }
+
+        if (markTaskConnectionError(task.taskId)) {
+          finalizeTaskPendingImages(task.taskId, t('common.failed'));
+          const summary = finishRunIfComplete('error', t('common.connectionError'));
+          if (!summary.allTerminal) {
             updateModeValue();
-            return;
           }
-          setStatus('', t('common.notConnected'));
-          setButtons(false);
-          isRunning = false;
-          updateModeValue();
         }
       };
 
@@ -1213,13 +1502,14 @@
           if (fallbackTimer) {
             clearTimeout(fallbackTimer);
           }
-          startSSE(taskIds, rawPublicKey);
+          startSSE(tasks, rawPublicKey);
+          return;
+        }
+        const state = getTaskState(task.taskId);
+        if (!state || isStopping || state.status === 'stopped') {
           return;
         }
         if (i === 0 && wsConnections.filter(w => w && w.readyState === WebSocket.OPEN).length === 0) {
-          setStatus('error', t('common.connectionError'));
-          isRunning = false;
-          syncStartButtonAvailability();
           updateModeValue();
         }
       };
@@ -1228,13 +1518,15 @@
     }
   }
 
-  function sendStart(promptOverride, targetWs) {
+  function sendStart(promptOverride, targetWs, taskIdOverride) {
     const ws = targetWs || wsConnections[0];
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    const taskId = taskIdOverride || currentTaskIds[0] || '';
+    const state = getTaskState(taskId);
     const prompt = promptOverride || (promptInput ? promptInput.value.trim() : '');
     const ratio = ratioSelect ? ratioSelect.value : '2:3';
     const nsfwEnabled = nsfwSelect ? nsfwSelect.value === 'true' : true;
-    const nVal = nSelect ? (parseInt(nSelect.value, 10) || 4) : 4;
+    const nVal = state && state.imageCount ? state.imageCount : (nSelect ? (parseInt(nSelect.value, 10) || 4) : 4);
     const infiniteModeEnabled = infiniteModeToggle ? infiniteModeToggle.checked : false;
     const payload = {
       type: 'start',
@@ -1280,8 +1572,10 @@
     // 稍作等待后再断开连接，给最后几帧数据留出到达时间
     setTimeout(() => {
       stopAllConnections();
+      currentTasks = [];
       currentTaskIds = [];
       currentReferenceUrls = [];
+      taskStateMap.clear();
       isRunning = false;
       isStopping = false;
       updateActive();
@@ -1357,6 +1651,18 @@
   }
 
   loadFilterDefaults();
+  syncInfiniteConcurrencyVisibility();
+
+  if (infiniteModeToggle) {
+    infiniteModeToggle.addEventListener('change', () => {
+      syncInfiniteConcurrencyVisibility();
+      if (isRunning) {
+        stopConnection().then(() => {
+          setTimeout(() => startConnection(), 50);
+        });
+      }
+    });
+  }
 
   if (ratioSelect) {
     ratioSelect.addEventListener('change', () => {
@@ -1367,9 +1673,11 @@
           });
           return;
         }
-        wsConnections.forEach(ws => {
+        currentTasks.forEach((task) => {
+          const state = getTaskState(task.taskId);
+          const ws = state && state.transport === 'ws' ? state.connection : null;
           if (ws && ws.readyState === WebSocket.OPEN) {
-            sendStart(null, ws);
+            sendStart(null, ws, task.taskId);
           }
         });
       }

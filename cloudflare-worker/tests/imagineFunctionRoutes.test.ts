@@ -162,3 +162,24 @@ test("function imagine start stores multiple reference images in the session pay
     infinite_mode: false,
   });
 });
+
+test("function imagine sse returns 204 when the task no longer exists", async () => {
+  const fakeDb = createFakeDb();
+  const response = await (worker.fetch as any)(
+    new Request("https://example.com/v1/function/imagine/sse?task_id=missing-task", {
+      headers: {
+        Authorization: "Bearer function-secret",
+      },
+    }),
+    {
+      DB: fakeDb.db,
+      BUILD_SHA: "dev",
+      CACHE_RESET_TZ_OFFSET_MINUTES: "480",
+      KV_CACHE_MAX_BYTES: "26214400",
+      KV_CLEANUP_BATCH: "200",
+    } as any,
+    createExecutionContext(),
+  );
+
+  assert.equal(response.status, 204);
+});

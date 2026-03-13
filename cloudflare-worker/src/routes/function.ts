@@ -910,7 +910,7 @@ functionRoutes.get("/v1/function/imagine/sse", async (c) => {
   const taskId = String(c.req.query("task_id") ?? "").trim();
   const session = await getFunctionSession<ImagineSessionPayload>(c.env.DB, taskId, "imagine");
   if (!session) {
-    return c.json({ error: "Task not found", code: "TASK_NOT_FOUND" }, 404);
+    return new Response(null, { status: 204 });
   }
   const sessionPayload = buildImagineSessionPayload(session.payload);
 
