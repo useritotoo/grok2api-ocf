@@ -125,7 +125,7 @@
 .settings-grid {
   --row-gap: 12px;
   display: grid;
-  grid-template-columns: 2.2fr 1fr;
+  grid-template-columns: 2.6fr 1fr;
   grid-template-rows: repeat(4, auto);
   column-gap: 16px;
   row-gap: var(--row-gap);
@@ -146,7 +146,7 @@
 
 .settings-block-duo {
   grid-column: 2;
-  grid-row: 1 / span 3;
+  grid-row: 1 / span 4;
   display: grid;
   grid-template-rows: repeat(5, 1fr);
   gap: 10px;
@@ -357,7 +357,7 @@
   font-size: 13px;
   font-weight: 600;
   color: var(--accents-7);
-  margin: 0;
+  margin-bottom: 16px;
 }
 
 .waterfall-actions {
@@ -553,11 +553,11 @@
   transition: transform 0.2s ease;
 }
 
-.toggle input:checked + .toggle-track {
+.toggle input:checked+.toggle-track {
   background: #111;
 }
 
-.toggle input:checked + .toggle-track::after {
+.toggle input:checked+.toggle-track::after {
   transform: translateX(18px);
 }
 
@@ -757,6 +757,7 @@
     opacity: 0;
     transform: translateY(8px);
   }
+
   to {
     opacity: 1;
     transform: translateY(0);
@@ -864,11 +865,11 @@
     width: 40px;
     height: 40px;
   }
-  
+
   .lightbox-prev {
     left: 15px;
   }
-  
+
   .lightbox-next {
     right: 15px;
   }

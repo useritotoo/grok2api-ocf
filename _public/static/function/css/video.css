@@ -87,11 +87,11 @@ body {
 
 .settings-grid {
   display: grid;
-  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr);
-  grid-template-rows: var(--field-block) var(--field-block) auto;
+  grid-template-columns: 2.6fr 1fr;
+  grid-template-rows: repeat(4, var(--field-block));
   column-gap: 16px;
   row-gap: var(--field-row-gap);
-  align-items: start;
+  align-items: end;
 }
 
 .settings-block {
@@ -101,21 +101,16 @@ body {
 
 .prompt-block {
   grid-column: 1;
-  grid-row: 1 / span 2;
+  grid-row: 1 / span 3;
 }
 
 .ref-block {
   grid-column: 1;
-  grid-row: 3;
+  grid-row: 4;
 }
 
 .ratio-block {
   grid-column: 2;
-  grid-row: 1;
-}
-
-.length-block {
-  grid-column: 3;
   grid-row: 1;
 }
 
@@ -124,31 +119,32 @@ body {
   grid-row: 2;
 }
 
-.preset-block {
-  grid-column: 3;
-  grid-row: 2;
-}
-
-.upload-block {
+.length-block {
   grid-column: 2;
   grid-row: 3;
 }
 
-.clear-block {
-  grid-column: 3;
-  grid-row: 3;
+.preset-block {
+  grid-column: 2;
+  grid-row: 4;
 }
 
-.upload-block .geist-button-outline,
-.clear-block .geist-button-outline {
-  width: 100%;
+.ref-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.ref-actions .geist-button-outline {
+  flex: 1;
   height: 32px;
 }
 
 .ref-controls {
   display: grid;
-  grid-template-columns: 1fr;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
+  align-items: center;
+  min-width: 0;
 }
 
 .ref-controls .geist-input {
@@ -174,8 +170,8 @@ body {
 }
 
 .video-textarea {
-  min-height: calc(var(--field-block) * 2 + var(--field-row-gap) - var(--field-label) - var(--field-label-gap));
-  height: calc(var(--field-block) * 2 + var(--field-row-gap) - var(--field-label) - var(--field-label-gap));
+  min-height: calc(var(--field-block) * 3 + var(--field-row-gap) * 2);
+  height: calc(var(--field-block) * 3 + var(--field-row-gap) * 2);
   resize: vertical;
 }
 

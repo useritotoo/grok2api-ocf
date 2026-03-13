@@ -36,18 +36,24 @@
             <div class="card-title" data-i18n="video.genSettings">生成设置</div>
             <div class="settings-grid">
               <div class="settings-block prompt-block">
-                <label class="field-label" for="promptInput" data-i18n="video.prompt">提示词</label>
-                <textarea id="promptInput" class="geist-input video-textarea"
-                  placeholder="例如：雨夜街头，镜头缓慢推进，霓虹反光，电影感"
+                <textarea id="promptInput" class="geist-input video-textarea" placeholder="例如：雨夜街头，镜头缓慢推进，霓虹反光，电影感"
                   data-i18n-placeholder="video.promptPlaceholder"></textarea>
               </div>
+
               <div class="settings-block ref-block">
-                <label class="field-label" for="imageUrlInput" data-i18n="video.referenceImage">参考图</label>
                 <div class="ref-controls">
-                  <input id="imageUrlInput" class="geist-input" placeholder="https://... 或 data:image/..."
+                  <input id="imageUrlInput" class="geist-input" placeholder="参考图支持上传图片或输入 https://... 或 data:image/..."
                     data-i18n-placeholder="video.referenceImagePlaceholder">
+                  <div class="ref-actions">
+                    <button id="selectImageFileBtn" class="geist-button-outline text-xs px-3" type="button"
+                      data-i18n="video.upload">上传</button>
+                    <button id="clearImageFileBtn" class="geist-button-outline text-xs px-3" type="button"
+                      data-i18n="video.clearImage">清除</button>
+                    <input id="imageFileInput" class="ref-file-input" type="file" accept="image/*">
+                  </div>
                 </div>
               </div>
+
               <div class="settings-block ratio-block">
                 <label class="field-label" for="ratioSelect" data-i18n="video.aspectRatio">画面比例</label>
                 <select id="ratioSelect" class="geist-input">
@@ -58,10 +64,7 @@
                   <option value="1:1" data-i18n="video.ratio1_1">1:1</option>
                 </select>
               </div>
-              <div class="settings-block length-block">
-                <label class="field-label" for="lengthSelect" data-i18n="video.duration">视频时长</label>
-                <input id="lengthSelect" class="geist-input" type="number" min="6" max="30" step="1" value="6">
-              </div>
+
               <div class="settings-block resolution-block">
                 <label class="field-label" for="resolutionSelect" data-i18n="video.resolution">分辨率</label>
                 <select id="resolutionSelect" class="geist-input">
@@ -69,6 +72,12 @@
                   <option value="720p">720p</option>
                 </select>
               </div>
+
+              <div class="settings-block length-block">
+                <label class="field-label" for="lengthSelect" data-i18n="video.duration">视频时长</label>
+                <input id="lengthSelect" class="geist-input" type="number" min="6" max="30" step="1" value="6">
+              </div>
+
               <div class="settings-block preset-block">
                 <label class="field-label" for="presetSelect" data-i18n="video.stylePreset">风格预设</label>
                 <select id="presetSelect" class="geist-input">
@@ -77,17 +86,6 @@
                   <option value="spicy">Spicy</option>
                   <option value="custom">Custom</option>
                 </select>
-              </div>
-              <div class="settings-block upload-block">
-                <label class="field-label">&nbsp;</label>
-                <button id="selectImageFileBtn" class="geist-button-outline text-xs px-3" type="button"
-                  data-i18n="video.upload">上传</button>
-                <input id="imageFileInput" class="ref-file-input" type="file" accept="image/*">
-              </div>
-              <div class="settings-block clear-block">
-                <label class="field-label">&nbsp;</label>
-                <button id="clearImageFileBtn" class="geist-button-outline text-xs px-3" type="button"
-                  data-i18n="video.clearImage">清除</button>
               </div>
             </div>
             <div class="video-actions video-settings-actions">
