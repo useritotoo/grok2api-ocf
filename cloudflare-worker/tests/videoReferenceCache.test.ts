@@ -5,7 +5,9 @@ import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 const {
   createReferenceUploadCache,
+  abortReferenceUpload,
   buildReferenceUploadKey,
+  extractReferenceRemoveId,
   hasPendingReferenceUploads,
   syncReferenceStartButtonState,
 } = require("../../_public/static/function/js/video-reference-cache.js");
@@ -135,4 +137,34 @@ test("syncReferenceStartButtonState disables the start button during upload and 
   });
   assert.equal(running, true);
   assert.equal(startBtn.disabled, true);
+});
+
+test("extractReferenceRemoveId accepts SVG-like event targets inside the remove button", () => {
+  const removeButton = {
+    getAttribute(name: string) {
+      return name === "data-reference-remove" ? "ref-123" : null;
+    },
+  };
+  const svgTarget = {
+    closest(selector: string) {
+      return selector === "[data-reference-remove]" ? removeButton : null;
+    },
+  };
+
+  assert.equal(extractReferenceRemoveId(svgTarget), "ref-123");
+  assert.equal(extractReferenceRemoveId(null), "");
+  assert.equal(extractReferenceRemoveId({}), "");
+});
+
+test("abortReferenceUpload cancels an in-flight upload exactly once", () => {
+  let abortCount = 0;
+  const item = {
+    abortUpload() {
+      abortCount += 1;
+    },
+  };
+
+  assert.equal(abortReferenceUpload(item), true);
+  assert.equal(abortCount, 1);
+  assert.equal(abortReferenceUpload({}), false);
 });

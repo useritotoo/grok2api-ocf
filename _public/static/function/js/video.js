@@ -773,7 +773,13 @@
     const index = getReferenceItemIndex(referenceId);
     if (index < 0) return;
     const [item] = referenceItems.splice(index, 1);
-    if (item && typeof item.abortUpload === 'function') {
+    if (window.VideoReferenceCache && typeof VideoReferenceCache.abortReferenceUpload === 'function') {
+      try {
+        VideoReferenceCache.abortReferenceUpload(item);
+      } catch (e) {
+        // ignore
+      }
+    } else if (item && typeof item.abortUpload === 'function') {
       try {
         item.abortUpload();
       } catch (e) {
@@ -1340,8 +1346,8 @@
       ? FunctionPayloads.buildVideoStartPayload({
           prompt,
           aspectRatio: ratioSelect ? ratioSelect.value : '3:2',
-          videoLength: lengthSelect ? parseInt(lengthSelect.value, 10) : 6,
-          resolutionName: resolutionSelect ? resolutionSelect.value : '480p',
+          videoLength: lengthSelect ? parseInt(lengthSelect.value, 10) : 15,
+          resolutionName: resolutionSelect ? resolutionSelect.value : '720p',
           preset: presetSelect ? presetSelect.value : 'normal',
           reasoningEffort: DEFAULT_REASONING_EFFORT,
           referenceUrl: imageUrls
@@ -1351,8 +1357,8 @@
           image_reference: buildImageReferencePayload(imageUrls),
           reasoning_effort: DEFAULT_REASONING_EFFORT,
           aspect_ratio: ratioSelect ? ratioSelect.value : '3:2',
-          video_length: lengthSelect ? parseInt(lengthSelect.value, 10) : 6,
-          resolution_name: resolutionSelect ? resolutionSelect.value : '480p',
+          video_length: lengthSelect ? parseInt(lengthSelect.value, 10) : 15,
+          resolution_name: resolutionSelect ? resolutionSelect.value : '720p',
           preset: presetSelect ? presetSelect.value : 'normal'
         };
 
@@ -1451,7 +1457,7 @@
           prompt,
           aspectRatio: ratioSelect ? ratioSelect.value : '3:2',
           videoLength: DEFAULT_EXTEND_SECONDS,
-          resolutionName: resolutionSelect ? resolutionSelect.value : '480p',
+            resolutionName: resolutionSelect ? resolutionSelect.value : '720p',
           preset: prompt ? (presetSelect ? presetSelect.value : 'normal') : 'spicy',
           reasoningEffort: DEFAULT_REASONING_EFFORT,
           extension: {
@@ -1467,7 +1473,7 @@
           reasoning_effort: DEFAULT_REASONING_EFFORT,
           aspect_ratio: ratioSelect ? ratioSelect.value : '3:2',
           video_length: DEFAULT_EXTEND_SECONDS,
-          resolution_name: resolutionSelect ? resolutionSelect.value : '480p',
+          resolution_name: resolutionSelect ? resolutionSelect.value : '720p',
           preset: prompt ? (presetSelect ? presetSelect.value : 'normal') : 'spicy',
           is_video_extension: true,
           extend_post_id: currentExtendPostId,
@@ -1774,10 +1780,13 @@
   if (referenceList) {
     referenceList.addEventListener('click', (event) => {
       const target = event.target;
-      if (!(target instanceof HTMLElement)) return;
-      const removeBtn = target.closest('[data-reference-remove]');
-      if (!removeBtn) return;
-      const referenceId = removeBtn.getAttribute('data-reference-remove') || '';
+      const referenceId = (window.VideoReferenceCache && typeof VideoReferenceCache.extractReferenceRemoveId === 'function')
+        ? VideoReferenceCache.extractReferenceRemoveId(target)
+        : (
+            target && typeof target.closest === 'function'
+              ? String((target.closest('[data-reference-remove]')?.getAttribute('data-reference-remove')) || '')
+              : ''
+          );
       if (!referenceId) return;
       removeReferenceItem(referenceId);
     });

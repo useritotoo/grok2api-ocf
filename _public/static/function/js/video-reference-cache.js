@@ -24,6 +24,25 @@
     return referenceItems.some((item) => item && item.status === "uploading");
   }
 
+  function extractReferenceRemoveId(target) {
+    if (!target || typeof target.closest !== "function") {
+      return "";
+    }
+    const removeButton = target.closest("[data-reference-remove]");
+    if (!removeButton || typeof removeButton.getAttribute !== "function") {
+      return "";
+    }
+    return String(removeButton.getAttribute("data-reference-remove") || "").trim();
+  }
+
+  function abortReferenceUpload(item) {
+    if (!item || typeof item.abortUpload !== "function") {
+      return false;
+    }
+    item.abortUpload();
+    return true;
+  }
+
   function syncReferenceStartButtonState(button, options) {
     const isRunning = Boolean(options && options.isRunning);
     const hasPendingUploads = hasPendingReferenceUploads(options && options.referenceItems);
@@ -64,7 +83,9 @@
   }
 
   return {
+    abortReferenceUpload: abortReferenceUpload,
     buildReferenceUploadKey: buildReferenceUploadKey,
+    extractReferenceRemoveId: extractReferenceRemoveId,
     hasPendingReferenceUploads: hasPendingReferenceUploads,
     syncReferenceStartButtonState: syncReferenceStartButtonState,
     createReferenceUploadCache: createReferenceUploadCache,

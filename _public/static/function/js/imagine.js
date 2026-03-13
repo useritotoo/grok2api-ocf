@@ -374,7 +374,13 @@
     const index = getReferenceItemIndex(referenceId);
     if (index < 0) return;
     const [item] = referenceItems.splice(index, 1);
-    if (item && typeof item.abortUpload === 'function') {
+    if (window.VideoReferenceCache && typeof VideoReferenceCache.abortReferenceUpload === 'function') {
+      try {
+        VideoReferenceCache.abortReferenceUpload(item);
+      } catch (e) {
+        // ignore
+      }
+    } else if (item && typeof item.abortUpload === 'function') {
       try {
         item.abortUpload();
       } catch (e) {
@@ -1338,10 +1344,13 @@
   if (referenceList) {
     referenceList.addEventListener('click', (event) => {
       const target = event.target;
-      if (!(target instanceof HTMLElement)) return;
-      const removeBtn = target.closest('[data-reference-remove]');
-      if (!removeBtn) return;
-      const referenceId = removeBtn.getAttribute('data-reference-remove') || '';
+      const referenceId = (window.VideoReferenceCache && typeof VideoReferenceCache.extractReferenceRemoveId === 'function')
+        ? VideoReferenceCache.extractReferenceRemoveId(target)
+        : (
+            target && typeof target.closest === 'function'
+              ? String((target.closest('[data-reference-remove]')?.getAttribute('data-reference-remove')) || '')
+              : ''
+          );
       if (!referenceId) return;
       removeReferenceItem(referenceId);
     });
