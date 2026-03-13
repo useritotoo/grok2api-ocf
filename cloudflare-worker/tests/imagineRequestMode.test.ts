@@ -26,7 +26,7 @@ test("maps imagine aspect ratios to upstream image sizes for generation requests
       prompt: "A neon skyline",
       aspect_ratio: "16:9",
       nsfw: false,
-      image_reference: null,
+      image_reference: [],
       n: 3,
       infinite_mode: false,
     }),

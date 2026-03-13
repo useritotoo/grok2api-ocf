@@ -6,6 +6,8 @@ const require = createRequire(import.meta.url);
 const {
   createReferenceUploadCache,
   buildReferenceUploadKey,
+  hasPendingReferenceUploads,
+  syncReferenceStartButtonState,
 } = require("../../_public/static/function/js/video-reference-cache.js");
 
 test("buildReferenceUploadKey uses file identity fields to fingerprint uploads", () => {
@@ -63,4 +65,74 @@ test("createReferenceUploadCache clears the cached upload after reset", async ()
 
   assert.equal(next, "/uploads/reference-2.png");
   assert.equal(uploadCount, 2);
+});
+
+test("createReferenceUploadCache keeps upload urls isolated per file", async () => {
+  const cache = createReferenceUploadCache();
+  const firstFile = {
+    name: "reference-a.png",
+    size: 1024,
+    lastModified: 1700000000000,
+    type: "image/png",
+  };
+  const secondFile = {
+    name: "reference-b.png",
+    size: 4096,
+    lastModified: 1700000001234,
+    type: "image/png",
+  };
+  let uploadCount = 0;
+
+  const upload = async (file: { name: string }) => {
+    uploadCount += 1;
+    return `/uploads/${file.name}-${uploadCount}.png`;
+  };
+
+  const first = await cache.getOrUpload(firstFile, upload);
+  const second = await cache.getOrUpload(secondFile, upload);
+  const firstAgain = await cache.getOrUpload(firstFile, upload);
+  const secondAgain = await cache.getOrUpload(secondFile, upload);
+
+  assert.equal(first, "/uploads/reference-a.png-1.png");
+  assert.equal(second, "/uploads/reference-b.png-2.png");
+  assert.equal(firstAgain, first);
+  assert.equal(secondAgain, second);
+  assert.equal(uploadCount, 2);
+});
+
+test("hasPendingReferenceUploads returns true only while a reference upload is still running", () => {
+  assert.equal(hasPendingReferenceUploads([]), false);
+  assert.equal(hasPendingReferenceUploads([{ status: "ready" }]), false);
+  assert.equal(
+    hasPendingReferenceUploads([
+      { status: "ready" },
+      { status: "uploading" },
+    ]),
+    true,
+  );
+});
+
+test("syncReferenceStartButtonState disables the start button during upload and restores it after completion", () => {
+  const startBtn = { disabled: false };
+
+  const pending = syncReferenceStartButtonState(startBtn, {
+    isRunning: false,
+    referenceItems: [{ status: "uploading" }],
+  });
+  assert.equal(pending, true);
+  assert.equal(startBtn.disabled, true);
+
+  const ready = syncReferenceStartButtonState(startBtn, {
+    isRunning: false,
+    referenceItems: [{ status: "ready" }],
+  });
+  assert.equal(ready, false);
+  assert.equal(startBtn.disabled, false);
+
+  const running = syncReferenceStartButtonState(startBtn, {
+    isRunning: true,
+    referenceItems: [{ status: "ready" }],
+  });
+  assert.equal(running, true);
+  assert.equal(startBtn.disabled, true);
 });

@@ -38,9 +38,16 @@
               <div class="settings-block prompt-block">
                 <textarea id="promptInput" class="geist-input video-textarea" placeholder="例如：雨夜街头，镜头缓慢推进，霓虹反光，电影感"
                   data-i18n-placeholder="video.promptPlaceholder"></textarea>
+                <div class="reference-upload-group" aria-label="参考图">
+                  <div class="reference-upload-head">
+                    <span class="field-label reference-upload-label">参考图</span>
+                    <span class="reference-upload-limit">最多 7 张</span>
+                  </div>
+                  <div id="referenceList" class="reference-card-list"></div>
+                </div>
               </div>
 
-              <div class="settings-block ref-block">
+              <div class="settings-block ref-block legacy-reference-block">
                 <div class="ref-controls">
                   <input id="imageUrlInput" class="geist-input" placeholder="参考图支持上传图片或输入 https://... 或 data:image/..."
                     data-i18n-placeholder="video.referenceImagePlaceholder">
@@ -49,7 +56,7 @@
                       data-i18n="video.upload">上传</button>
                     <button id="clearImageFileBtn" class="geist-button-outline text-xs px-3" type="button"
                       data-i18n="video.clearImage">清除</button>
-                    <input id="imageFileInput" class="ref-file-input" type="file" accept="image/*">
+                    <input id="imageFileInput" class="ref-file-input" type="file" accept="image/*" multiple>
                   </div>
                 </div>
               </div>

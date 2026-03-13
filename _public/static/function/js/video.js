@@ -3,6 +3,7 @@
   const stopBtn = document.getElementById('stopBtn');
   const clearBtn = document.getElementById('clearBtn');
   const promptInput = document.getElementById('promptInput');
+  const referenceList = document.getElementById('referenceList');
   const imageUrlInput = document.getElementById('imageUrlInput');
   const imageFileInput = document.getElementById('imageFileInput');
   const imageFileName = document.getElementById('imageFileName');
@@ -52,6 +53,8 @@
   let collectingContent = false;
   let startAt = 0;
   let selectedFile = null;
+  let referenceItems = [];
+  let referenceUploadSeq = 0;
   let elapsedTimer = null;
   let lastProgress = 0;
   let currentPreviewItem = null;
@@ -70,6 +73,7 @@
   const DEFAULT_EXTEND_SECONDS = 10;
   const TAIL_FRAME_GUARD_MS = 80;
   const APPROX_VIDEO_FPS = 30;
+  const MAX_REFERENCE_FILES = 7;
   const referenceUploadCache = (window.VideoReferenceCache && typeof VideoReferenceCache.createReferenceUploadCache === 'function')
     ? VideoReferenceCache.createReferenceUploadCache()
     : {
@@ -107,6 +111,35 @@
       // ignore
     }
     return fallback;
+  }
+
+  function syncStartButtonAvailability() {
+    if (!startBtn) return false;
+    if (window.VideoReferenceCache && typeof VideoReferenceCache.syncReferenceStartButtonState === 'function') {
+      return VideoReferenceCache.syncReferenceStartButtonState(startBtn, {
+        isRunning,
+        referenceItems,
+      });
+    }
+    const disabled = Boolean(
+      isRunning || referenceItems.some((item) => item && item.status === 'uploading')
+    );
+    startBtn.disabled = disabled;
+    return disabled;
+  }
+
+  function buildImageReferencePayload(referenceUrls) {
+    if (window.FunctionPayloads && typeof FunctionPayloads.buildImageReference === 'function') {
+      return FunctionPayloads.buildImageReference(referenceUrls);
+    }
+    const values = (Array.isArray(referenceUrls) ? referenceUrls : [referenceUrls])
+      .map((value) => String(value || '').trim())
+      .filter(Boolean);
+    if (!values.length) return undefined;
+    if (values.length === 1) {
+      return { image_url: values[0] };
+    }
+    return values.map((url) => ({ image_url: url }));
   }
 
   function basename(value) {
@@ -238,7 +271,7 @@
     } else {
       startBtn.classList.remove('hidden');
       stopBtn.classList.add('hidden');
-      startBtn.disabled = false;
+      syncStartButtonAvailability();
     }
   }
 
@@ -705,6 +738,276 @@
     return manualUrl || '';
   }
 
+  function nextReferenceItemId() {
+    referenceUploadSeq += 1;
+    return `video-ref-${Date.now()}-${referenceUploadSeq}`;
+  }
+
+  function revokeReferencePreview(item) {
+    if (!item || !item.previewUrl || !String(item.previewUrl).startsWith('blob:')) return;
+    try {
+      URL.revokeObjectURL(item.previewUrl);
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  function getReferenceItemIndex(referenceId) {
+    return referenceItems.findIndex((item) => item.id === referenceId);
+  }
+
+  function setReferenceItemState(referenceId, patch) {
+    const index = getReferenceItemIndex(referenceId);
+    if (index < 0) return null;
+    referenceItems[index] = { ...referenceItems[index], ...patch };
+    return referenceItems[index];
+  }
+
+  function getReadyReferenceUrls() {
+    return referenceItems
+      .filter((item) => item.status === 'ready' && item.remoteUrl)
+      .map((item) => item.remoteUrl);
+  }
+
+  function removeReferenceItem(referenceId) {
+    const index = getReferenceItemIndex(referenceId);
+    if (index < 0) return;
+    const [item] = referenceItems.splice(index, 1);
+    if (item && typeof item.abortUpload === 'function') {
+      try {
+        item.abortUpload();
+      } catch (e) {
+        // ignore
+      }
+    }
+    revokeReferencePreview(item);
+    if (imageFileInput) {
+      imageFileInput.value = '';
+    }
+    renderReferenceItems();
+  }
+
+  function renderReferenceItems() {
+    if (!referenceList || !selectImageFileBtn) return;
+    referenceList.innerHTML = '';
+    referenceItems.forEach((item, index) => {
+      const card = document.createElement('div');
+      card.className = 'reference-card';
+      if (item.status === 'uploading') {
+        card.classList.add('is-uploading');
+      } else if (item.status === 'error') {
+        card.classList.add('is-error');
+      }
+
+      const image = document.createElement('img');
+      image.className = 'reference-card-image';
+      image.src = item.previewUrl;
+      image.alt = item.name || `reference-${index + 1}`;
+      card.appendChild(image);
+
+      if (item.status === 'uploading' || item.status === 'error') {
+        const overlay = document.createElement('div');
+        overlay.className = 'reference-card-overlay';
+        if (item.status === 'uploading') {
+          const progressBar = document.createElement('span');
+          progressBar.className = 'reference-card-progress';
+          progressBar.style.setProperty('--upload-progress', `${Math.max(0, Math.min(100, Number(item.progress) || 0))}%`);
+          overlay.appendChild(progressBar);
+        }
+        const label = document.createElement('span');
+        label.className = 'reference-card-status';
+        label.textContent = item.status === 'uploading'
+          ? `${Math.max(0, Math.min(100, Math.round(Number(item.progress) || 0)))}%`
+          : (item.error || tSafe('video.uploadFailed', '上传失败'));
+        overlay.appendChild(label);
+        card.appendChild(overlay);
+      }
+
+      const removeBtn = document.createElement('button');
+      removeBtn.className = 'reference-card-remove';
+      removeBtn.type = 'button';
+      removeBtn.setAttribute('aria-label', tSafe('video.clearImage', '移除参考图'));
+      removeBtn.dataset.referenceRemove = item.id;
+      removeBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>';
+      card.appendChild(removeBtn);
+      referenceList.appendChild(card);
+    });
+
+    if (referenceItems.length < MAX_REFERENCE_FILES) {
+      selectImageFileBtn.className = 'reference-card reference-card-add';
+      selectImageFileBtn.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14"></path><path d="M5 12h14"></path></svg>';
+      selectImageFileBtn.removeAttribute('data-i18n');
+      selectImageFileBtn.setAttribute('aria-label', '添加参考图');
+      selectImageFileBtn.classList.remove('hidden');
+      selectImageFileBtn.disabled = false;
+      referenceList.appendChild(selectImageFileBtn);
+    } else {
+      selectImageFileBtn.classList.add('hidden');
+      selectImageFileBtn.disabled = true;
+    }
+
+    if (imageFileName) {
+      imageFileName.textContent = referenceItems.length
+        ? `${referenceItems.length}/${MAX_REFERENCE_FILES}`
+        : tSafe('common.noFileSelected', '未选择文件');
+    }
+    syncStartButtonAvailability();
+  }
+
+  function uploadReferenceItem(referenceItem, authHeader) {
+    const uploadTask = (file) => new Promise((resolve, reject) => {
+      const form = new FormData();
+      form.append('file', file, file.name || 'reference.png');
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', '/v1/function/uploads/image');
+      const headers = buildAuthHeaders(authHeader);
+      Object.entries(headers || {}).forEach(([key, value]) => {
+        if (value == null || value === '') return;
+        xhr.setRequestHeader(key, String(value));
+      });
+      setReferenceItemState(referenceItem.id, {
+        status: 'uploading',
+        progress: 0,
+        error: '',
+        abortUpload: () => xhr.abort(),
+      });
+      renderReferenceItems();
+      xhr.upload.onprogress = (event) => {
+        const nextProgress = event.lengthComputable && event.total > 0
+          ? Math.max(1, Math.min(99, Math.round((event.loaded / event.total) * 100)))
+          : 50;
+        if (setReferenceItemState(referenceItem.id, { progress: nextProgress })) {
+          renderReferenceItems();
+        }
+      };
+      xhr.onload = () => {
+        const text = typeof xhr.responseText === 'string' ? xhr.responseText : '';
+        let payload = null;
+        try {
+          payload = text ? JSON.parse(text) : null;
+        } catch (e) {
+          payload = null;
+        }
+        if (xhr.status < 200 || xhr.status >= 300) {
+          const message = (payload && payload.error && payload.error.message) || text || tSafe('common.requestFailed', '请求失败');
+          reject(new Error(message));
+          return;
+        }
+        const url = payload && payload.url ? String(payload.url) : '';
+        if (!url) {
+          reject(new Error(tSafe('video.uploadFailed', '上传失败')));
+          return;
+        }
+        resolve(url);
+      };
+      xhr.onerror = () => {
+        reject(new Error(tSafe('video.uploadFailed', '上传失败')));
+      };
+      xhr.onabort = () => {
+        reject(new Error('upload_aborted'));
+      };
+      xhr.send(form);
+    });
+
+    referenceUploadCache.getOrUpload(referenceItem.file, uploadTask)
+      .then((remoteUrl) => {
+        if (!setReferenceItemState(referenceItem.id, {
+          remoteUrl,
+          status: 'ready',
+          progress: 100,
+          error: '',
+          abortUpload: null,
+        })) {
+          return;
+        }
+        renderReferenceItems();
+      })
+      .catch((error) => {
+        if (String(error && error.message || '') === 'upload_aborted') {
+          return;
+        }
+        const liveItem = setReferenceItemState(referenceItem.id, {
+          status: 'error',
+          error: error && error.message ? error.message : tSafe('video.uploadFailed', '上传失败'),
+          abortUpload: null,
+        });
+        if (!liveItem) return;
+        renderReferenceItems();
+        toast(liveItem.error, 'error');
+      });
+  }
+
+  async function queueReferenceFiles(fileList) {
+    const files = Array.from(fileList || []);
+    if (!files.length) return;
+    const authHeader = await ensureFunctionKey();
+    if (authHeader === null) {
+      toast(tSafe('common.configurePublicKey', '请先配置 Function Key。'), 'error');
+      window.location.href = '/login';
+      return;
+    }
+    const imageFiles = [];
+    let invalidCount = 0;
+    files.forEach((file) => {
+      if (file && String(file.type || '').toLowerCase().startsWith('image/')) {
+        imageFiles.push(file);
+      } else {
+        invalidCount += 1;
+      }
+    });
+    if (invalidCount) {
+      toast('仅支持上传图片文件。', 'error');
+    }
+
+    const remaining = MAX_REFERENCE_FILES - referenceItems.length;
+    if (remaining <= 0) {
+      toast(`最多上传 ${MAX_REFERENCE_FILES} 张参考图。`, 'warning');
+      if (imageFileInput) {
+        imageFileInput.value = '';
+      }
+      return;
+    }
+    if (imageFiles.length > remaining) {
+      toast(`最多上传 ${MAX_REFERENCE_FILES} 张参考图。`, 'warning');
+    }
+
+    imageFiles.slice(0, remaining).forEach((file) => {
+      const cachedUrl = referenceUploadCache.peek(file);
+      const referenceItem = {
+        id: nextReferenceItemId(),
+        file,
+        name: file.name || 'reference',
+        previewUrl: URL.createObjectURL(file),
+        progress: cachedUrl ? 100 : 0,
+        status: cachedUrl ? 'ready' : 'uploading',
+        remoteUrl: cachedUrl || '',
+        error: '',
+        abortUpload: null,
+      };
+      referenceItems.push(referenceItem);
+      renderReferenceItems();
+      if (!cachedUrl) {
+        uploadReferenceItem(referenceItem, authHeader);
+      }
+    });
+
+    if (imageFileInput) {
+      imageFileInput.value = '';
+    }
+  }
+
+  async function resolveReferenceImage() {
+    if (referenceItems.some((item) => item.status === 'uploading')) {
+      toast('参考图上传中，请稍候。', 'warning');
+      throw new Error('reference_uploading');
+    }
+    if (referenceItems.some((item) => item.status === 'error')) {
+      toast('请移除上传失败的参考图后再试。', 'error');
+      throw new Error('reference_invalid');
+    }
+    return getReadyReferenceUrls();
+  }
+
   async function createVideoTask(authHeader, payload) {
     const res = await fetch('/v1/function/video/start', {
       method: 'POST',
@@ -1014,20 +1317,20 @@
     }
 
     const prompt = promptInput ? promptInput.value.trim() : '';
-    let imageUrl = '';
+    let imageUrls = [];
     try {
-      imageUrl = await resolveReferenceImage(authHeader);
+      imageUrls = await resolveReferenceImage();
     } catch (e) {
       return;
     }
-    if (!prompt && !imageUrl) {
+    if (!prompt && !imageUrls.length) {
       toast(tSafe('common.enterPrompt', '请输入提示词，或提供参考图。'), 'error');
       return;
     }
 
     isRunning = true;
     currentRunKind = 'generate';
-    startBtn.disabled = true;
+    syncStartButtonAvailability();
     updateMeta();
     resetOutput(true);
     initPreviewSlot(currentRunKind);
@@ -1041,11 +1344,11 @@
           resolutionName: resolutionSelect ? resolutionSelect.value : '480p',
           preset: presetSelect ? presetSelect.value : 'normal',
           reasoningEffort: DEFAULT_REASONING_EFFORT,
-          referenceUrl: imageUrl
+          referenceUrl: imageUrls
         })
       : {
           prompt,
-          image_reference: imageUrl ? { image_url: imageUrl } : undefined,
+          image_reference: buildImageReferencePayload(imageUrls),
           reasoning_effort: DEFAULT_REASONING_EFFORT,
           aspect_ratio: ratioSelect ? ratioSelect.value : '3:2',
           video_length: lengthSelect ? parseInt(lengthSelect.value, 10) : 6,
@@ -1058,8 +1361,8 @@
       taskId = await createVideoTask(authHeader, payload);
     } catch (e) {
       setStatus('error', tSafe('common.createTaskFailed', '创建任务失败'));
-      startBtn.disabled = false;
       isRunning = false;
+      syncStartButtonAvailability();
       return;
     }
 
@@ -1176,7 +1479,7 @@
 
     isRunning = true;
     currentRunKind = 'splice';
-    startBtn.disabled = true;
+    syncStartButtonAvailability();
     updateMeta();
     resetOutput(true);
     initPreviewSlot(currentRunKind);
@@ -1188,8 +1491,8 @@
       taskId = await createVideoTask(authHeader, payload);
     } catch (e) {
       setStatus('error', tSafe('common.createTaskFailed', '创建任务失败'));
-      startBtn.disabled = false;
       isRunning = false;
+      syncStartButtonAvailability();
       setSpliceButtonState('idle');
       return;
     }
@@ -1458,21 +1761,7 @@
 
   if (imageFileInput) {
     imageFileInput.addEventListener('change', () => {
-      const file = imageFileInput.files && imageFileInput.files[0];
-      if (!file) {
-        clearFileSelection();
-        return;
-      }
-      if (imageUrlInput && imageUrlInput.value.trim()) {
-        imageUrlInput.value = '';
-      }
-      selectedFile = file;
-      if (!referenceUploadCache.peek(file)) {
-        referenceUploadCache.reset();
-      }
-      if (imageUrlInput) {
-        imageUrlInput.value = file.name;
-      }
+      queueReferenceFiles(imageFileInput.files);
     });
   }
 
@@ -1482,21 +1771,15 @@
     });
   }
 
-  if (clearImageFileBtn) {
-    clearImageFileBtn.addEventListener('click', () => {
-      clearFileSelection();
-    });
-  }
-
-  if (imageUrlInput) {
-    imageUrlInput.addEventListener('input', () => {
-      if (imageUrlInput.value.trim() && selectedFile) {
-        clearFileSelection();
-        return;
-      }
-      if (imageUrlInput.value.trim()) {
-        referenceUploadCache.reset();
-      }
+  if (referenceList) {
+    referenceList.addEventListener('click', (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+      const removeBtn = target.closest('[data-reference-remove]');
+      if (!removeBtn) return;
+      const referenceId = removeBtn.getAttribute('data-reference-remove') || '';
+      if (!referenceId) return;
+      removeReferenceItem(referenceId);
     });
   }
 
@@ -1555,5 +1838,6 @@
   setSpliceButtonState('idle');
   setEditMeta();
   updateCurrentVideoLabel('-');
+  renderReferenceItems();
   syncTimelineAvailability();
 })();

@@ -17,33 +17,47 @@
     ].join("::");
   }
 
+  function hasPendingReferenceUploads(referenceItems) {
+    if (!Array.isArray(referenceItems) || !referenceItems.length) {
+      return false;
+    }
+    return referenceItems.some((item) => item && item.status === "uploading");
+  }
+
+  function syncReferenceStartButtonState(button, options) {
+    const isRunning = Boolean(options && options.isRunning);
+    const hasPendingUploads = hasPendingReferenceUploads(options && options.referenceItems);
+    const disabled = isRunning || hasPendingUploads;
+    if (button && typeof button === "object" && "disabled" in button) {
+      button.disabled = disabled;
+    }
+    return disabled;
+  }
+
   function createReferenceUploadCache() {
-    let cachedKey = "";
-    let cachedUrl = "";
+    const cache = new Map();
 
     return {
       reset() {
-        cachedKey = "";
-        cachedUrl = "";
+        cache.clear();
       },
       peek(file) {
         const key = buildReferenceUploadKey(file);
-        return key && key === cachedKey ? cachedUrl : "";
+        return key ? (cache.get(key) || "") : "";
       },
       async getOrUpload(file, uploadFn) {
         const key = buildReferenceUploadKey(file);
         if (!key) return "";
-        if (cachedUrl && key === cachedKey) {
+        const cachedUrl = cache.get(key);
+        if (cachedUrl) {
           return cachedUrl;
         }
         const nextUrl = String(await uploadFn(file) || "").trim();
         if (!nextUrl) {
-          cachedKey = "";
-          cachedUrl = "";
+          cache.delete(key);
           return "";
         }
-        cachedKey = key;
-        cachedUrl = nextUrl;
+        cache.set(key, nextUrl);
         return nextUrl;
       },
     };
@@ -51,6 +65,8 @@
 
   return {
     buildReferenceUploadKey: buildReferenceUploadKey,
+    hasPendingReferenceUploads: hasPendingReferenceUploads,
+    syncReferenceStartButtonState: syncReferenceStartButtonState,
     createReferenceUploadCache: createReferenceUploadCache,
   };
 });

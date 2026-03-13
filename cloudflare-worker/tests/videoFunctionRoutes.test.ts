@@ -139,13 +139,69 @@ test("function video start accepts extension requests with an empty prompt and s
     video_length: 10,
     resolution_name: "720p",
     preset: "spicy",
-    image_reference: null,
+    image_reference: [],
     reasoning_effort: null,
     is_video_extension: true,
     extend_post_id: "abcd1234abcd1234abcd1234abcd1234",
     video_extension_start_time: 4.25,
     original_post_id: "orig1234orig1234orig1234orig1234",
     file_attachment_id: "file1234file1234file1234file1234",
+    stitch_with_extend: true,
+  });
+});
+
+test("function video start stores multiple reference images in the session payload", async () => {
+  const fakeDb = createFakeDb();
+  const response = await (worker.fetch as any)(
+    new Request("https://example.com/v1/function/video/start", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer function-secret",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        prompt: "Animate the fabric motion",
+        aspect_ratio: "9:16",
+        video_length: 6,
+        resolution_name: "480p",
+        preset: "normal",
+        image_reference: [
+          { image_url: "/images/video-ref-1.png" },
+          { image_url: "/images/video-ref-2.png" },
+          { image_url: "/images/video-ref-3.png" },
+        ],
+      }),
+    }),
+    {
+      DB: fakeDb.db,
+      BUILD_SHA: "dev",
+      CACHE_RESET_TZ_OFFSET_MINUTES: "480",
+      KV_CACHE_MAX_BYTES: "26214400",
+      KV_CLEANUP_BATCH: "200",
+    } as any,
+    createExecutionContext(),
+  );
+
+  assert.equal(response.status, 200);
+  const payload = (await response.json()) as { task_id: string };
+  assert.ok(payload.task_id);
+  assert.deepEqual(fakeDb.sessions.get(payload.task_id), {
+    prompt: "Animate the fabric motion",
+    aspect_ratio: "9:16",
+    video_length: 6,
+    resolution_name: "480p",
+    preset: "normal",
+    image_reference: [
+      "/images/video-ref-1.png",
+      "/images/video-ref-2.png",
+      "/images/video-ref-3.png",
+    ],
+    reasoning_effort: null,
+    is_video_extension: false,
+    extend_post_id: null,
+    video_extension_start_time: null,
+    original_post_id: null,
+    file_attachment_id: null,
     stitch_with_extend: true,
   });
 });

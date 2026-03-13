@@ -30,6 +30,34 @@ test("buildImagineStartPayload includes image_reference when a reference url is 
   });
 });
 
+test("buildImagineStartPayload includes multiple image_reference items when reference urls are provided", () => {
+  const payload = buildImagineStartPayload({
+    prompt: "Blend these three lighting references",
+    aspectRatio: "3:2",
+    nsfw: false,
+    n: 2,
+    infiniteMode: false,
+    referenceUrl: [
+      "/images/upload-ref-1.png",
+      "/images/upload-ref-2.png",
+      "/images/upload-ref-3.png",
+    ],
+  });
+
+  assert.deepEqual(payload, {
+    prompt: "Blend these three lighting references",
+    aspect_ratio: "3:2",
+    nsfw: false,
+    n: 2,
+    infinite_mode: false,
+    image_reference: [
+      { image_url: "/images/upload-ref-1.png" },
+      { image_url: "/images/upload-ref-2.png" },
+      { image_url: "/images/upload-ref-3.png" },
+    ],
+  });
+});
+
 test("buildVideoStartPayload includes image_reference when a reference url is provided", () => {
   const payload = buildVideoStartPayload({
     prompt: "Animate this portrait",
@@ -51,6 +79,34 @@ test("buildVideoStartPayload includes image_reference when a reference url is pr
     image_reference: {
       image_url: "/images/upload-ref.png",
     },
+  });
+});
+
+test("buildVideoStartPayload includes multiple image_reference items when reference urls are provided", () => {
+  const payload = buildVideoStartPayload({
+    prompt: "Animate using multiple pose references",
+    aspectRatio: "16:9",
+    videoLength: 6,
+    resolutionName: "480p",
+    preset: "normal",
+    reasoningEffort: "low",
+    referenceUrl: [
+      "/images/upload-ref-1.png",
+      "/images/upload-ref-2.png",
+    ],
+  });
+
+  assert.deepEqual(payload, {
+    prompt: "Animate using multiple pose references",
+    aspect_ratio: "16:9",
+    video_length: 6,
+    resolution_name: "480p",
+    preset: "normal",
+    reasoning_effort: "low",
+    image_reference: [
+      { image_url: "/images/upload-ref-1.png" },
+      { image_url: "/images/upload-ref-2.png" },
+    ],
   });
 });
 

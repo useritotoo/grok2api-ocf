@@ -28,7 +28,7 @@ interface ImagineSessionPayload {
   prompt: string;
   aspect_ratio: string;
   nsfw: boolean | null;
-  image_reference: string | null;
+  image_reference: string[];
   n: number;
   infinite_mode: boolean;
 }
@@ -39,7 +39,7 @@ interface VideoSessionPayload {
   video_length: number;
   resolution_name: "480p" | "720p";
   preset: "fun" | "normal" | "spicy" | "custom";
-  image_reference: string | null;
+  image_reference: string[];
   reasoning_effort: string | null;
   is_video_extension: boolean;
   extend_post_id: string | null;
@@ -131,7 +131,7 @@ function buildImagineSessionPayload(input: {
     prompt: String(input.prompt ?? "").trim(),
     aspect_ratio: normalizeImagineAspectRatio(String(input.aspect_ratio ?? "2:3")),
     nsfw: parseBoolean(input.nsfw),
-    image_reference: extractImageReference(input.image_reference),
+    image_reference: extractImageReferences(input.image_reference),
     n: normalizeImagineCount(input.n),
     infinite_mode: normalizeImagineInfiniteMode(input.infinite_mode),
   };
@@ -300,16 +300,33 @@ function extractVoiceConnectionInfo(input: unknown): {
   };
 }
 
-function extractImageReference(input: unknown): string | null {
+function appendImageReference(target: string[], input: unknown): void {
   if (typeof input === "string") {
     const value = input.trim();
-    return value || null;
+    if (value && !target.includes(value)) {
+      target.push(value);
+    }
+    return;
   }
   if (input && typeof input === "object") {
-    const url = String((input as Record<string, unknown>).image_url ?? "").trim();
-    return url || null;
+    const record = input as Record<string, unknown>;
+    if (Array.isArray(input)) {
+      for (const item of input) {
+        appendImageReference(target, item);
+      }
+      return;
+    }
+    const url = String(record.image_url ?? "").trim();
+    if (url && !target.includes(url)) {
+      target.push(url);
+    }
   }
-  return null;
+}
+
+function extractImageReferences(input: unknown): string[] {
+  const references: string[] = [];
+  appendImageReference(references, input);
+  return references;
 }
 
 function extractOptionalString(input: unknown): string | null {
@@ -325,10 +342,10 @@ function normalizeVideoExtensionStartTime(input: unknown): number | null {
 }
 
 function buildVideoChatBody(payload: VideoSessionPayload): Record<string, unknown> {
-  const content = payload.image_reference
+  const content = payload.image_reference.length
     ? [
         { type: "text", text: payload.prompt },
-        { type: "image_url", image_url: { url: payload.image_reference } },
+        ...payload.image_reference.map((url) => ({ type: "image_url", image_url: { url } })),
       ]
     : payload.prompt;
 
@@ -382,8 +399,8 @@ export function resolveImagineGenerationTarget(imageReference: unknown): {
   path: "/images/generations" | "/images/edits";
   model: "grok-imagine-1.0" | "grok-imagine-1.0-edit";
 } {
-  const reference = String(imageReference ?? "").trim();
-  if (reference) {
+  const references = extractImageReferences(imageReference);
+  if (references.length) {
     return {
       path: "/images/edits",
       model: "grok-imagine-1.0-edit",
@@ -458,39 +475,42 @@ export async function buildImagineEditFormData(
   c: any,
   payload: ImagineSessionPayload,
 ): Promise<FormData> {
-  const reference = String(payload.image_reference ?? "").trim();
-  if (!reference) {
+  const references = extractImageReferences(payload.image_reference);
+  if (!references.length) {
     throw new Error("Missing image reference for imagine edit.");
   }
 
-  const cachedReference = await readUploadedImagineReferenceFromKv(c, reference);
-  const fetchedReference = cachedReference
-    ? null
-    : await (async () => {
-        const referenceUrl = reference.startsWith("data:")
-          ? reference
-          : new URL(reference, c.req.url).toString();
-        const response = await fetch(referenceUrl, { redirect: "follow" });
-        if (!response.ok) {
-          throw new Error(`Failed to fetch imagine reference image (${response.status}).`);
-        }
-        return {
-          bytes: await response.arrayBuffer(),
-          mime: normalizeImagineReferenceMime(response.headers.get("content-type")),
-        };
-      })();
-
-  const mime = cachedReference?.mime ?? fetchedReference!.mime;
-  const ext = imagineReferenceExtFromMime(mime);
-  const bytes = cachedReference?.bytes ?? fetchedReference!.bytes;
-  const file = new File([bytes], `reference.${ext}`, { type: mime });
   const form = new FormData();
   form.set("model", resolveImagineGenerationTarget(payload.image_reference).model);
   form.set("prompt", payload.prompt);
   form.set("n", String(payload.n));
   form.set("response_format", "b64_json");
   form.set("size", chooseImageSizeFromAspectRatio(payload.aspect_ratio));
-  form.append("image", file, file.name);
+  for (const [index, reference] of references.entries()) {
+    const cachedReference = await readUploadedImagineReferenceFromKv(c, reference);
+    const fetchedReference = cachedReference
+      ? null
+      : await (async () => {
+          const referenceUrl = reference.startsWith("data:")
+            ? reference
+            : new URL(reference, c.req.url).toString();
+          const response = await fetch(referenceUrl, { redirect: "follow" });
+          if (!response.ok) {
+            throw new Error(`Failed to fetch imagine reference image (${response.status}).`);
+          }
+          return {
+            bytes: await response.arrayBuffer(),
+            mime: normalizeImagineReferenceMime(response.headers.get("content-type")),
+          };
+        })();
+
+    const mime = cachedReference?.mime ?? fetchedReference!.mime;
+    const ext = imagineReferenceExtFromMime(mime);
+    const bytes = cachedReference?.bytes ?? fetchedReference!.bytes;
+    const fileName = references.length === 1 ? `reference.${ext}` : `reference-${index + 1}.${ext}`;
+    const file = new File([bytes], fileName, { type: mime });
+    form.append("image", file, file.name);
+  }
   return form;
 }
 
@@ -674,7 +694,7 @@ async function runImagineLoop(args: {
     const batchStart = Date.now();
     batchesCompleted += 1;
     try {
-      if (!args.payload.image_reference) {
+      if (!args.payload.image_reference.length) {
         await runImagineWsBatch({
           c: args.c,
           payload: args.payload,
@@ -1038,7 +1058,7 @@ functionRoutes.get("/v1/function/imagine/ws", async (c) => {
       prompt,
       aspect_ratio: payload.aspect_ratio ?? sessionPayload?.aspect_ratio ?? "2:3",
       nsfw: payload.nsfw ?? sessionPayload?.nsfw,
-      image_reference: payload.image_reference ?? sessionPayload?.image_reference ?? null,
+      image_reference: payload.image_reference ?? sessionPayload?.image_reference ?? [],
       n: payload.n ?? sessionPayload?.n,
       infinite_mode: payload.infinite_mode ?? sessionPayload?.infinite_mode,
     });
@@ -1063,8 +1083,11 @@ functionRoutes.get("/v1/function/imagine/ws", async (c) => {
 functionRoutes.post("/v1/function/video/start", async (c) => {
   const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
   const prompt = String(body.prompt ?? "").trim();
-  const imageReference =
-    extractImageReference(body.image_reference) ?? (String(body.image_url ?? "").trim() || null);
+  const imageReference = extractImageReferences(body.image_reference);
+  const legacyImageUrl = String(body.image_url ?? "").trim();
+  if (!imageReference.length && legacyImageUrl) {
+    imageReference.push(legacyImageUrl);
+  }
   const isVideoExtension = parseBoolean(body.is_video_extension) === true;
   const extendPostId = extractOptionalString(body.extend_post_id);
   const videoExtensionStartTime = normalizeVideoExtensionStartTime(body.video_extension_start_time);
@@ -1081,7 +1104,7 @@ functionRoutes.post("/v1/function/video/start", async (c) => {
         400,
       );
     }
-  } else if (!prompt && !imageReference) {
+  } else if (!prompt && !imageReference.length) {
     return c.json({ error: "Prompt cannot be empty", code: "invalid_prompt" }, 400);
   }
 

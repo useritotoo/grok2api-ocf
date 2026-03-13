@@ -7,10 +7,26 @@
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
   "use strict";
 
+  function normalizeReferenceUrls(referenceUrl) {
+    const values = Array.isArray(referenceUrl) ? referenceUrl : [referenceUrl];
+    const result = [];
+    for (const item of values) {
+      const value = String(item || "").trim();
+      if (!value) continue;
+      if (!result.includes(value)) {
+        result.push(value);
+      }
+    }
+    return result;
+  }
+
   function buildImageReference(referenceUrl) {
-    const value = String(referenceUrl || "").trim();
-    if (!value) return null;
-    return { image_url: value };
+    const urls = normalizeReferenceUrls(referenceUrl);
+    if (!urls.length) return null;
+    if (urls.length === 1) {
+      return { image_url: urls[0] };
+    }
+    return urls.map((url) => ({ image_url: url }));
   }
 
   function buildImagineStartPayload(args) {
@@ -64,6 +80,7 @@
   }
 
   return {
+    normalizeReferenceUrls: normalizeReferenceUrls,
     buildImageReference: buildImageReference,
     buildImagineStartPayload: buildImagineStartPayload,
     buildVideoStartPayload: buildVideoStartPayload,

@@ -108,8 +108,57 @@ test("function imagine start stores n and infinite mode in the session payload",
     prompt: "A glass city in the rain",
     aspect_ratio: "16:9",
     nsfw: false,
-    image_reference: "/images/upload-demo.png",
+    image_reference: ["/images/upload-demo.png"],
     n: 5,
     infinite_mode: true,
+  });
+});
+
+test("function imagine start stores multiple reference images in the session payload", async () => {
+  const fakeDb = createFakeDb();
+  const response = await (worker.fetch as any)(
+    new Request("https://example.com/v1/function/imagine/start", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer function-secret",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        prompt: "Use all reference angles",
+        aspect_ratio: "1:1",
+        nsfw: null,
+        n: 3,
+        infinite_mode: false,
+        image_reference: [
+          { image_url: "/images/upload-demo-1.png" },
+          { image_url: "/images/upload-demo-2.png" },
+          { image_url: "/images/upload-demo-3.png" },
+        ],
+      }),
+    }),
+    {
+      DB: fakeDb.db,
+      BUILD_SHA: "dev",
+      CACHE_RESET_TZ_OFFSET_MINUTES: "480",
+      KV_CACHE_MAX_BYTES: "26214400",
+      KV_CLEANUP_BATCH: "200",
+    } as any,
+    createExecutionContext(),
+  );
+
+  assert.equal(response.status, 200);
+  const payload = (await response.json()) as { task_id: string };
+  assert.ok(payload.task_id);
+  assert.deepEqual(fakeDb.sessions.get(payload.task_id), {
+    prompt: "Use all reference angles",
+    aspect_ratio: "1:1",
+    nsfw: null,
+    image_reference: [
+      "/images/upload-demo-1.png",
+      "/images/upload-demo-2.png",
+      "/images/upload-demo-3.png",
+    ],
+    n: 3,
+    infinite_mode: false,
   });
 });

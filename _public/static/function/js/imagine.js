@@ -3,6 +3,7 @@
   const stopBtn = document.getElementById('stopBtn');
   const clearBtn = document.getElementById('clearBtn');
   const promptInput = document.getElementById('promptInput');
+  const referenceList = document.getElementById('referenceList');
   const imageUrlInput = document.getElementById('imageUrlInput');
   const imageFileInput = document.getElementById('imageFileInput');
   const imageFileName = document.getElementById('imageFileName');
@@ -42,7 +43,9 @@
   const MODE_STORAGE_KEY = 'imagine_mode';
   let pendingFallbackTimer = null;
   let currentTaskIds = [];
-  let currentReferenceUrl = '';
+  let currentReferenceUrls = [];
+  let referenceItems = [];
+  let referenceUploadSeq = 0;
   let directoryHandle = null;
   let selectedReferenceFile = null;
   let useFileSystemAPI = false;
@@ -51,6 +54,7 @@
   let streamSequence = 0;
   const streamImageMap = new Map();
   let finalMinBytesDefault = 100000;
+  const MAX_REFERENCE_FILES = 3;
   const referenceUploadCache = (window.VideoReferenceCache && typeof VideoReferenceCache.createReferenceUploadCache === 'function')
     ? VideoReferenceCache.createReferenceUploadCache()
     : {
@@ -65,6 +69,49 @@
     if (typeof showToast === 'function') {
       showToast(message, type);
     }
+  }
+
+  function tSafe(key, fallback, params) {
+    try {
+      if (typeof t === 'function') {
+        const value = t(key, params);
+        if (value && value !== key) {
+          return value;
+        }
+      }
+    } catch (e) {
+      // ignore
+    }
+    return fallback;
+  }
+
+  function syncStartButtonAvailability() {
+    if (!startBtn) return false;
+    if (window.VideoReferenceCache && typeof VideoReferenceCache.syncReferenceStartButtonState === 'function') {
+      return VideoReferenceCache.syncReferenceStartButtonState(startBtn, {
+        isRunning,
+        referenceItems,
+      });
+    }
+    const disabled = Boolean(
+      isRunning || referenceItems.some((item) => item && item.status === 'uploading')
+    );
+    startBtn.disabled = disabled;
+    return disabled;
+  }
+
+  function buildImageReferencePayload(referenceUrls) {
+    if (window.FunctionPayloads && typeof FunctionPayloads.buildImageReference === 'function') {
+      return FunctionPayloads.buildImageReference(referenceUrls);
+    }
+    const values = (Array.isArray(referenceUrls) ? referenceUrls : [referenceUrls])
+      .map((value) => String(value || '').trim())
+      .filter(Boolean);
+    if (!values.length) return undefined;
+    if (values.length === 1) {
+      return { image_url: values[0] };
+    }
+    return values.map((url) => ({ image_url: url }));
   }
 
   function setStatus(state, text) {
@@ -84,7 +131,7 @@
     } else {
       startBtn.classList.remove('hidden');
       stopBtn.classList.add('hidden');
-      startBtn.disabled = false;
+      syncStartButtonAvailability();
     }
   }
 
@@ -242,7 +289,7 @@
     if (imageUrlInput && imageUrlInput.value.trim() === previousFileName) {
       imageUrlInput.value = '';
     }
-    currentReferenceUrl = imageUrlInput ? imageUrlInput.value.trim() : '';
+    currentReferenceUrls = [];
     if (imageFileInput) {
       imageFileInput.value = '';
     }
@@ -292,13 +339,283 @@
     return manualUrl || '';
   }
 
-  async function createImagineTask(prompt, ratio, authHeader, nsfwEnabled, referenceUrl, n, infiniteMode) {
+  function nextReferenceItemId() {
+    referenceUploadSeq += 1;
+    return `imagine-ref-${Date.now()}-${referenceUploadSeq}`;
+  }
+
+  function revokeReferencePreview(item) {
+    if (!item || !item.previewUrl || !String(item.previewUrl).startsWith('blob:')) return;
+    try {
+      URL.revokeObjectURL(item.previewUrl);
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  function getReferenceItemIndex(referenceId) {
+    return referenceItems.findIndex((item) => item.id === referenceId);
+  }
+
+  function setReferenceItemState(referenceId, patch) {
+    const index = getReferenceItemIndex(referenceId);
+    if (index < 0) return null;
+    referenceItems[index] = { ...referenceItems[index], ...patch };
+    return referenceItems[index];
+  }
+
+  function getReadyReferenceUrls() {
+    return referenceItems
+      .filter((item) => item.status === 'ready' && item.remoteUrl)
+      .map((item) => item.remoteUrl);
+  }
+
+  function removeReferenceItem(referenceId) {
+    const index = getReferenceItemIndex(referenceId);
+    if (index < 0) return;
+    const [item] = referenceItems.splice(index, 1);
+    if (item && typeof item.abortUpload === 'function') {
+      try {
+        item.abortUpload();
+      } catch (e) {
+        // ignore
+      }
+    }
+    revokeReferencePreview(item);
+    if (imageFileInput) {
+      imageFileInput.value = '';
+    }
+    renderReferenceItems();
+  }
+
+  function renderReferenceItems() {
+    if (!referenceList || !selectImageFileBtn) return;
+    referenceList.innerHTML = '';
+    referenceItems.forEach((item, index) => {
+      const card = document.createElement('div');
+      card.className = 'reference-card';
+      if (item.status === 'uploading') {
+        card.classList.add('is-uploading');
+      } else if (item.status === 'error') {
+        card.classList.add('is-error');
+      }
+
+      const image = document.createElement('img');
+      image.className = 'reference-card-image';
+      image.src = item.previewUrl;
+      image.alt = item.name || `reference-${index + 1}`;
+      card.appendChild(image);
+
+      if (item.status === 'uploading' || item.status === 'error') {
+        const overlay = document.createElement('div');
+        overlay.className = 'reference-card-overlay';
+        if (item.status === 'uploading') {
+          const progressBar = document.createElement('span');
+          progressBar.className = 'reference-card-progress';
+          progressBar.style.setProperty('--upload-progress', `${Math.max(0, Math.min(100, Number(item.progress) || 0))}%`);
+          overlay.appendChild(progressBar);
+        }
+        const label = document.createElement('span');
+        label.className = 'reference-card-status';
+        label.textContent = item.status === 'uploading'
+          ? `${Math.max(0, Math.min(100, Math.round(Number(item.progress) || 0)))}%`
+          : (item.error || tSafe('imagine.uploadFailed', '上传失败'));
+        overlay.appendChild(label);
+        card.appendChild(overlay);
+      }
+
+      const removeBtn = document.createElement('button');
+      removeBtn.className = 'reference-card-remove';
+      removeBtn.type = 'button';
+      removeBtn.setAttribute('aria-label', tSafe('imagine.clearImage', '移除参考图'));
+      removeBtn.dataset.referenceRemove = item.id;
+      removeBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>';
+      card.appendChild(removeBtn);
+      referenceList.appendChild(card);
+    });
+
+    if (referenceItems.length < MAX_REFERENCE_FILES) {
+      selectImageFileBtn.className = 'reference-card reference-card-add';
+      selectImageFileBtn.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14"></path><path d="M5 12h14"></path></svg>';
+      selectImageFileBtn.removeAttribute('data-i18n');
+      selectImageFileBtn.setAttribute('aria-label', '添加参考图');
+      selectImageFileBtn.classList.remove('hidden');
+      selectImageFileBtn.disabled = false;
+      referenceList.appendChild(selectImageFileBtn);
+    } else {
+      selectImageFileBtn.classList.add('hidden');
+      selectImageFileBtn.disabled = true;
+    }
+
+    if (imageFileName) {
+      imageFileName.textContent = referenceItems.length
+        ? `${referenceItems.length}/${MAX_REFERENCE_FILES}`
+        : tSafe('common.noFileSelected', '未选择文件');
+    }
+    syncStartButtonAvailability();
+  }
+
+  function uploadReferenceItem(referenceItem, authHeader) {
+    const uploadTask = (file) => new Promise((resolve, reject) => {
+      const form = new FormData();
+      form.append('file', file, file.name || 'reference.png');
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', '/v1/function/uploads/image');
+      const headers = buildAuthHeaders(authHeader);
+      Object.entries(headers || {}).forEach(([key, value]) => {
+        if (value == null || value === '') return;
+        xhr.setRequestHeader(key, String(value));
+      });
+      setReferenceItemState(referenceItem.id, {
+        status: 'uploading',
+        progress: 0,
+        error: '',
+        abortUpload: () => xhr.abort(),
+      });
+      renderReferenceItems();
+      xhr.upload.onprogress = (event) => {
+        const nextProgress = event.lengthComputable && event.total > 0
+          ? Math.max(1, Math.min(99, Math.round((event.loaded / event.total) * 100)))
+          : 50;
+        if (setReferenceItemState(referenceItem.id, { progress: nextProgress })) {
+          renderReferenceItems();
+        }
+      };
+      xhr.onload = () => {
+        const text = typeof xhr.responseText === 'string' ? xhr.responseText : '';
+        let payload = null;
+        try {
+          payload = text ? JSON.parse(text) : null;
+        } catch (e) {
+          payload = null;
+        }
+        if (xhr.status < 200 || xhr.status >= 300) {
+          const message = (payload && payload.error && payload.error.message) || text || tSafe('common.requestFailed', '请求失败');
+          reject(new Error(message));
+          return;
+        }
+        const url = payload && payload.url ? String(payload.url) : '';
+        if (!url) {
+          reject(new Error(tSafe('imagine.uploadFailed', '上传失败')));
+          return;
+        }
+        resolve(url);
+      };
+      xhr.onerror = () => {
+        reject(new Error(tSafe('imagine.uploadFailed', '上传失败')));
+      };
+      xhr.onabort = () => {
+        reject(new Error('upload_aborted'));
+      };
+      xhr.send(form);
+    });
+
+    referenceUploadCache.getOrUpload(referenceItem.file, uploadTask)
+      .then((remoteUrl) => {
+        if (!setReferenceItemState(referenceItem.id, {
+          remoteUrl,
+          status: 'ready',
+          progress: 100,
+          error: '',
+          abortUpload: null,
+        })) {
+          return;
+        }
+        renderReferenceItems();
+      })
+      .catch((error) => {
+        if (String(error && error.message || '') === 'upload_aborted') {
+          return;
+        }
+        const liveItem = setReferenceItemState(referenceItem.id, {
+          status: 'error',
+          error: error && error.message ? error.message : tSafe('imagine.uploadFailed', '上传失败'),
+          abortUpload: null,
+        });
+        if (!liveItem) return;
+        renderReferenceItems();
+        toast(liveItem.error, 'error');
+      });
+  }
+
+  async function queueReferenceFiles(fileList) {
+    const files = Array.from(fileList || []);
+    if (!files.length) return;
+    const authHeader = await ensureFunctionKey();
+    if (authHeader === null) {
+      toast(tSafe('common.configurePublicKey', '请先配置 Function Key。'), 'error');
+      window.location.href = '/login';
+      return;
+    }
+    const imageFiles = [];
+    let invalidCount = 0;
+    files.forEach((file) => {
+      if (file && String(file.type || '').toLowerCase().startsWith('image/')) {
+        imageFiles.push(file);
+      } else {
+        invalidCount += 1;
+      }
+    });
+    if (invalidCount) {
+      toast('仅支持上传图片文件。', 'error');
+    }
+
+    const remaining = MAX_REFERENCE_FILES - referenceItems.length;
+    if (remaining <= 0) {
+      toast(`最多上传 ${MAX_REFERENCE_FILES} 张参考图。`, 'warning');
+      if (imageFileInput) {
+        imageFileInput.value = '';
+      }
+      return;
+    }
+    if (imageFiles.length > remaining) {
+      toast(`最多上传 ${MAX_REFERENCE_FILES} 张参考图。`, 'warning');
+    }
+
+    imageFiles.slice(0, remaining).forEach((file) => {
+      const cachedUrl = referenceUploadCache.peek(file);
+      const referenceItem = {
+        id: nextReferenceItemId(),
+        file,
+        name: file.name || 'reference',
+        previewUrl: URL.createObjectURL(file),
+        progress: cachedUrl ? 100 : 0,
+        status: cachedUrl ? 'ready' : 'uploading',
+        remoteUrl: cachedUrl || '',
+        error: '',
+        abortUpload: null,
+      };
+      referenceItems.push(referenceItem);
+      renderReferenceItems();
+      if (!cachedUrl) {
+        uploadReferenceItem(referenceItem, authHeader);
+      }
+    });
+
+    if (imageFileInput) {
+      imageFileInput.value = '';
+    }
+  }
+
+  async function resolveReferenceImage() {
+    if (referenceItems.some((item) => item.status === 'uploading')) {
+      toast('参考图上传中，请稍候。', 'warning');
+      throw new Error('reference_uploading');
+    }
+    if (referenceItems.some((item) => item.status === 'error')) {
+      toast('请移除上传失败的参考图后再试。', 'error');
+      throw new Error('reference_invalid');
+    }
+    return getReadyReferenceUrls();
+  }
+
+  async function createImagineTask(prompt, ratio, authHeader, nsfwEnabled, referenceUrls, n, infiniteMode) {
     const payload = (window.FunctionPayloads && typeof FunctionPayloads.buildImagineStartPayload === 'function')
       ? FunctionPayloads.buildImagineStartPayload({
           prompt,
           aspectRatio: ratio,
           nsfw: nsfwEnabled,
-          referenceUrl,
+          referenceUrl: referenceUrls,
           n,
           infiniteMode
         })
@@ -308,7 +625,7 @@
           nsfw: nsfwEnabled,
           n,
           infinite_mode: !!infiniteMode,
-          image_reference: referenceUrl ? { image_url: referenceUrl } : undefined
+          image_reference: buildImageReferencePayload(referenceUrls)
         };
     const res = await fetch('/v1/function/imagine/start', {
       method: 'POST',
@@ -326,8 +643,8 @@
     return data && data.task_id ? String(data.task_id) : '';
   }
 
-  async function createImagineTasks(prompt, ratio, n, authHeader, nsfwEnabled, referenceUrl, infiniteMode) {
-    const taskId = await createImagineTask(prompt, ratio, authHeader, nsfwEnabled, referenceUrl, n, infiniteMode);
+  async function createImagineTasks(prompt, ratio, n, authHeader, nsfwEnabled, referenceUrls, infiniteMode) {
+    const taskId = await createImagineTask(prompt, ratio, authHeader, nsfwEnabled, referenceUrls, n, infiniteMode);
     if (!taskId) {
       throw new Error('Missing task id');
     }
@@ -649,10 +966,10 @@
         }
         setStatus('', t('common.stopped'));
         setButtons(false);
-        startBtn.disabled = false;
         isRunning = false;
+        syncStartButtonAvailability();
         currentTaskIds = [];
-        currentReferenceUrl = '';
+        currentReferenceUrls = [];
         updateModeValue();
       }
     } else if (data.type === 'error' || data.error) {
@@ -743,7 +1060,7 @@
         updateActive();
         if (!isRunning) {
           setButtons(false);
-          startBtn.disabled = false;
+          syncStartButtonAvailability();
           updateModeValue();
           return;
         }
@@ -752,7 +1069,7 @@
           setStatus('error', t('common.connectionError'));
           setButtons(false);
           isRunning = false;
-          startBtn.disabled = false;
+          syncStartButtonAvailability();
           updateModeValue();
         }
       };
@@ -788,7 +1105,7 @@
 
     isRunning = true;
     setStatus('connecting', t('common.connecting'));
-    startBtn.disabled = true;
+    syncStartButtonAvailability();
 
     if (pendingFallbackTimer) {
       clearTimeout(pendingFallbackTimer);
@@ -796,16 +1113,16 @@
     }
 
     let taskIds = [];
-    let referenceUrl = '';
+    let referenceUrls = [];
     try {
-      referenceUrl = await resolveReferenceImage(authHeader);
-      currentReferenceUrl = referenceUrl;
-      taskIds = await createImagineTasks(prompt, ratio, n, authHeader, nsfwEnabled, referenceUrl, infiniteModeEnabled);
+      referenceUrls = await resolveReferenceImage();
+      currentReferenceUrls = referenceUrls;
+      taskIds = await createImagineTasks(prompt, ratio, n, authHeader, nsfwEnabled, referenceUrls, infiniteModeEnabled);
     } catch (e) {
       setStatus('error', t('common.createTaskFailed'));
-      startBtn.disabled = false;
       isRunning = false;
-      currentReferenceUrl = '';
+      syncStartButtonAvailability();
+      currentReferenceUrls = [];
       return;
     }
     currentTaskIds = taskIds;
@@ -872,7 +1189,7 @@
         if (remaining === 0 && !fallbackDone) {
           if (!isRunning) {
             setButtons(false);
-            startBtn.disabled = false;
+            syncStartButtonAvailability();
             updateModeValue();
             return;
           }
@@ -895,8 +1212,8 @@
         }
         if (i === 0 && wsConnections.filter(w => w && w.readyState === WebSocket.OPEN).length === 0) {
           setStatus('error', t('common.connectionError'));
-          startBtn.disabled = false;
           isRunning = false;
+          syncStartButtonAvailability();
           updateModeValue();
         }
       };
@@ -920,7 +1237,7 @@
       nsfw: nsfwEnabled,
       n: nVal,
       infinite_mode: infiniteModeEnabled,
-      ...(currentReferenceUrl ? { image_reference: { image_url: currentReferenceUrl } } : {})
+      ...(currentReferenceUrls.length ? { image_reference: buildImageReferencePayload(currentReferenceUrls) } : {})
     };
     ws.send(JSON.stringify(payload));
     updateError('');
@@ -958,7 +1275,7 @@
     setTimeout(() => {
       stopAllConnections();
       currentTaskIds = [];
-      currentReferenceUrl = '';
+      currentReferenceUrls = [];
       isRunning = false;
       isStopping = false;
       updateActive();
@@ -1008,25 +1325,7 @@
 
   if (imageFileInput) {
     imageFileInput.addEventListener('change', () => {
-      const file = imageFileInput.files && imageFileInput.files[0];
-      if (!file) {
-        clearReferenceSelection();
-        return;
-      }
-      if (imageUrlInput && imageUrlInput.value.trim()) {
-        imageUrlInput.value = '';
-      }
-      selectedReferenceFile = file;
-      currentReferenceUrl = '';
-      if (!referenceUploadCache.peek(file)) {
-        referenceUploadCache.reset();
-      }
-      if (imageUrlInput) {
-        imageUrlInput.value = file.name;
-      }
-      if (imageFileName) {
-        imageFileName.textContent = file.name;
-      }
+      queueReferenceFiles(imageFileInput.files);
     });
   }
 
@@ -1036,23 +1335,15 @@
     });
   }
 
-  if (clearImageFileBtn) {
-    clearImageFileBtn.addEventListener('click', () => {
-      clearReferenceSelection();
-      currentReferenceUrl = imageUrlInput ? imageUrlInput.value.trim() : '';
-    });
-  }
-
-  if (imageUrlInput) {
-    imageUrlInput.addEventListener('input', () => {
-      currentReferenceUrl = imageUrlInput.value.trim();
-      if (imageUrlInput.value.trim() && selectedReferenceFile) {
-        clearReferenceSelection();
-        return;
-      }
-      if (imageUrlInput.value.trim()) {
-        referenceUploadCache.reset();
-      }
+  if (referenceList) {
+    referenceList.addEventListener('click', (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+      const removeBtn = target.closest('[data-reference-remove]');
+      if (!removeBtn) return;
+      const referenceId = removeBtn.getAttribute('data-reference-remove') || '';
+      if (!referenceId) return;
+      removeReferenceItem(referenceId);
     });
   }
 
@@ -1441,4 +1732,5 @@
       }
     });
   }
+  renderReferenceItems();
 })();
