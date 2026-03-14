@@ -154,3 +154,23 @@ test("buildVideoStartPayload caps video length at 15 seconds", () => {
 
   assert.equal(payload.video_length, 15);
 });
+
+test("buildVideoStartPayload allows video extensions up to 90 seconds", () => {
+  const payload = buildVideoStartPayload({
+    prompt: "Continue the dolly move",
+    aspectRatio: "16:9",
+    videoLength: 120,
+    resolutionName: "720p",
+    preset: "spicy",
+    extension: {
+      extendPostId: "abcd1234abcd1234abcd1234abcd1234",
+      startTime: 4.25,
+      originalPostId: "orig1234orig1234orig1234orig1234",
+      fileAttachmentId: "file1234file1234file1234file1234",
+      stitchWithExtend: true,
+    },
+  });
+
+  assert.equal(payload.video_length, 90);
+  assert.equal(payload.is_video_extension, true);
+});

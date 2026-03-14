@@ -113,10 +113,10 @@ function parseBoolean(input: unknown): boolean | null {
   return value === "1" || value === "true" || value === "yes" || value === "on";
 }
 
-function normalizeVideoLength(input: unknown): number {
+function normalizeVideoLength(input: unknown, isVideoExtension = false): number {
   const value = Math.floor(Number(input ?? 6));
   if (!Number.isFinite(value)) return 6;
-  return Math.min(15, Math.max(6, value));
+  return Math.min(isVideoExtension ? 90 : 15, Math.max(6, value));
 }
 
 function normalizePromptEnhanceTemperature(input: unknown): number {
@@ -1273,7 +1273,7 @@ functionRoutes.post("/v1/function/video/start", async (c) => {
   const payload: VideoSessionPayload = {
     prompt,
     aspect_ratio: normalizeVideoAspectRatio(String(body.aspect_ratio ?? "3:2")),
-    video_length: normalizeVideoLength(body.video_length),
+    video_length: normalizeVideoLength(body.video_length, isVideoExtension),
     resolution_name: normalizeResolution(body.resolution_name),
     preset: normalizePreset(body.preset),
     image_reference: imageReference,
@@ -1326,6 +1326,9 @@ functionRoutes.get("/v1/function/video/cache/list", async (c) => {
 functionRoutes.post("/v1/function/video/upscale", async (c) => {
   const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
   const videoUrl = extractOptionalString(body.video_url);
+  if (videoUrl && videoUrl.startsWith("blob:")) {
+    return c.json({ error: "blob video urls are not supported", code: "invalid_video_url" }, 400);
+  }
   const videoId =
     extractOptionalString(body.video_id) ||
     (videoUrl ? extractVideoId(videoUrl) : "") ||

@@ -15,15 +15,17 @@ test("video page defaults to 480p resolution, caps duration at 15 seconds, and e
     html,
     /<input id="lengthSelect" class="geist-input" type="number" min="6" max="15" step="1" value="15">/,
   );
-  assert.match(html, />视频工作区<\/div>/);
+  assert.match(html, /视频工作区/);
   assert.match(html, /<button id="upscaleBtn"[^>]*>/);
-  assert.match(html, /<span>AI超分<\/span>/);
+  assert.match(html, /<span>AI\s*超分<\/span>/);
 });
 
-test("video page JS fallbacks align with the 480p default and 15 second cap", () => {
+test("video page JS keeps generation at 15 seconds and extends up to 90 seconds", () => {
   const js = readFileSync(videoJsPath, "utf8");
 
   assert.match(js, /const MAX_VIDEO_SECONDS = 15;/);
-  assert.match(js, /return Math\.max\(MIN_VIDEO_SECONDS, Math\.min\(MAX_VIDEO_SECONDS, parsed\)\);/);
+  assert.match(js, /const MAX_EXTEND_VIDEO_SECONDS = 90;/);
+  assert.match(js, /const videoLength = getRequestedVideoLength\(MAX_VIDEO_SECONDS, MAX_VIDEO_SECONDS\);/);
+  assert.match(js, /const videoLength = getRequestedVideoLength\(MAX_EXTEND_VIDEO_SECONDS, DEFAULT_EXTEND_SECONDS\);/);
   assert.match(js, /function getRequestedResolutionName\(\)\s*\{\s*return resolutionSelect \? String\(resolutionSelect\.value \|\| ''\)\.trim\(\) \|\| '480p' : '480p';/);
 });

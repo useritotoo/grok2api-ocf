@@ -686,6 +686,32 @@ test("video extension keeps the selected preset even when prompt is empty", asyn
   }
 });
 
+test("video extension uses the selected length and caps it at 90 seconds", async () => {
+  const { hooks, fetchCalls, eventSources, document } = loadVideoHooks();
+  const lengthSelect = document.getElementById("lengthSelect");
+
+  hooks.setState({
+    selectedVideoUrl: "https://example.com/images/source-video",
+    currentExtendPostId: "abcd1234abcd1234abcd1234abcd1234",
+    originalFileAttachmentId: "orig1234orig1234orig1234orig1234",
+    lockedTimestampMs: 2500,
+  });
+
+  assert.equal((lengthSelect as any)?.max, "90");
+  if (lengthSelect) lengthSelect.value = "120";
+
+  await hooks.runExtendVideo();
+
+  try {
+    const startCall = fetchCalls.filter((entry) => entry.url === "/v1/function/video/start").at(-1);
+    assert.ok(startCall?.init?.body);
+    const payload = JSON.parse(String(startCall.init.body)) as Record<string, unknown>;
+    assert.equal(payload.video_length, 90);
+  } finally {
+    eventSources[0]?.emitMessage("[DONE]");
+  }
+});
+
 test("video workspace AI upscale replaces the selected source with the upscaled video url", async () => {
   const { hooks, document } = loadVideoHooks();
   const upscaleBtn = document.getElementById("upscaleBtn");
@@ -702,4 +728,28 @@ test("video workspace AI upscale replaces the selected source with the upscaled 
 
   const state = hooks.getState();
   assert.equal(state.selectedVideoUrl, "/images/u_upscaled-video");
+});
+
+test("video workspace AI upscale stays disabled for uploaded blob videos", async () => {
+  const { hooks, document, fetchCalls } = loadVideoHooks();
+  const upscaleBtn = document.getElementById("upscaleBtn");
+  const localBlobUrl = "blob:https://example.com/ef3cd27c-cf71-41e3-a861-0ad90b36a77f";
+
+  hooks.setState({
+    selectedVideoUrl: localBlobUrl,
+    currentExtendPostId: "",
+    originalFileAttachmentId: "",
+    lockedTimestampMs: 0,
+  });
+
+  assert.equal(upscaleBtn?.disabled, true);
+
+  upscaleBtn?.click();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const upscaleCalls = fetchCalls.filter((entry) => entry.url === "/v1/function/video/upscale");
+  assert.equal(upscaleCalls.length, 0);
+
+  const state = hooks.getState();
+  assert.equal(state.selectedVideoUrl, localBlobUrl);
 });

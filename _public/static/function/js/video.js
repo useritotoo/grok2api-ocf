@@ -81,6 +81,7 @@
   const DEFAULT_EXTEND_SECONDS = 10;
   const MIN_VIDEO_SECONDS = 6;
   const MAX_VIDEO_SECONDS = 15;
+  const MAX_EXTEND_VIDEO_SECONDS = 90;
   const TAIL_FRAME_GUARD_MS = 80;
   const APPROX_VIDEO_FPS = 30;
   const MAX_REFERENCE_FILES = 7;
@@ -122,6 +123,10 @@
       });
     blobCache.set(key, entry);
     return entry.promise;
+  }
+
+  function isLocalBlobUrl(value) {
+    return String(value || '').trim().startsWith('blob:');
   }
 
   function getBlobUrlSync(originalUrl) {
@@ -288,6 +293,7 @@
       const raw = pending.shift();
       if (!raw || visited.has(raw)) continue;
       visited.add(raw);
+      if (isLocalBlobUrl(raw)) continue;
       const generatedMatch = raw.match(/generated-([0-9a-fA-F-]{32,36})-/);
       if (generatedMatch && generatedMatch[1]) {
         return generatedMatch[1];
@@ -355,24 +361,36 @@
     }
   }
 
-  function clampVideoLength(value, fallback) {
+  function clampVideoLength(value, fallback, maxSeconds) {
     const parsed = Math.floor(Number(value ?? fallback));
     if (!Number.isFinite(parsed)) {
       return fallback;
     }
-    return Math.max(MIN_VIDEO_SECONDS, Math.min(MAX_VIDEO_SECONDS, parsed));
+    return Math.max(MIN_VIDEO_SECONDS, Math.min(maxSeconds, parsed));
   }
 
   function getRequestedAspectRatio() {
     return ratioSelect ? String(ratioSelect.value || '').trim() || '3:2' : '3:2';
   }
 
-  function getRequestedVideoLength() {
-    const safe = clampVideoLength(lengthSelect ? lengthSelect.value : MAX_VIDEO_SECONDS, MAX_VIDEO_SECONDS);
+  function getRequestedVideoLength(maxSeconds, fallback) {
+    const safe = clampVideoLength(lengthSelect ? lengthSelect.value : fallback, fallback, maxSeconds);
     if (lengthSelect && String(lengthSelect.value) !== String(safe)) {
       lengthSelect.value = String(safe);
     }
     return safe;
+  }
+
+  function syncRequestedVideoLengthLimit() {
+    if (!lengthSelect) return;
+    const isExtensionMode = Boolean(selectedVideoUrl);
+    const maxSeconds = isExtensionMode ? MAX_EXTEND_VIDEO_SECONDS : MAX_VIDEO_SECONDS;
+    const fallback = isExtensionMode ? DEFAULT_EXTEND_SECONDS : MAX_VIDEO_SECONDS;
+    lengthSelect.max = String(maxSeconds);
+    const safe = clampVideoLength(lengthSelect.value, fallback, maxSeconds);
+    if (String(lengthSelect.value) !== String(safe)) {
+      lengthSelect.value = String(safe);
+    }
   }
 
   function getRequestedResolutionName() {
@@ -388,7 +406,10 @@
       aspectValue.textContent = getRequestedAspectRatio();
     }
     if (lengthValue) {
-      lengthValue.textContent = `${getRequestedVideoLength()}s`;
+      lengthValue.textContent = `${getRequestedVideoLength(
+        selectedVideoUrl ? MAX_EXTEND_VIDEO_SECONDS : MAX_VIDEO_SECONDS,
+        selectedVideoUrl ? DEFAULT_EXTEND_SECONDS : MAX_VIDEO_SECONDS
+      )}s`;
     }
     if (resolutionValue) {
       resolutionValue.textContent = getRequestedResolutionName();
@@ -429,14 +450,18 @@
 
   function syncTimelineAvailability() {
     const disabled = !selectedVideoUrl || (isRunning && currentRunKind === 'splice');
+    syncRequestedVideoLengthLimit();
     if (editTimeline) {
       editTimeline.disabled = disabled;
       editTimeline.classList.toggle('is-disabled', disabled);
     }
     if (upscaleBtn) {
-      const hasUpscaleTarget = Boolean(currentExtendPostId || extractPostIdFromFileName(selectedVideoUrl));
+      const hasUpscaleTarget =
+        !isLocalBlobUrl(selectedVideoUrl) &&
+        Boolean(currentExtendPostId || extractPostIdFromFileName(selectedVideoUrl));
       upscaleBtn.disabled = disabled || !hasUpscaleTarget;
     }
+    updateMeta();
   }
 
   function updateDeleteZoneTrack(inputEl) {
@@ -2064,7 +2089,7 @@
 
   function buildGenerationPayload(prompt, imageUrls) {
     const aspectRatio = getRequestedAspectRatio();
-    const videoLength = getRequestedVideoLength();
+    const videoLength = getRequestedVideoLength(MAX_VIDEO_SECONDS, MAX_VIDEO_SECONDS);
     const resolutionName = getRequestedResolutionName();
     const preset = getRequestedPreset();
     if (window.FunctionPayloads && typeof FunctionPayloads.buildVideoStartPayload === 'function') {
@@ -2091,13 +2116,14 @@
 
   function buildExtensionPayload(prompt) {
     const aspectRatio = getRequestedAspectRatio();
+    const videoLength = getRequestedVideoLength(MAX_EXTEND_VIDEO_SECONDS, DEFAULT_EXTEND_SECONDS);
     const resolutionName = getRequestedResolutionName();
     const preset = getRequestedPreset();
     if (window.FunctionPayloads && typeof FunctionPayloads.buildVideoStartPayload === 'function') {
       return FunctionPayloads.buildVideoStartPayload({
         prompt,
         aspectRatio,
-        videoLength: DEFAULT_EXTEND_SECONDS,
+        videoLength,
         resolutionName,
         preset,
         reasoningEffort: DEFAULT_REASONING_EFFORT,
@@ -2114,7 +2140,7 @@
       prompt,
       reasoning_effort: DEFAULT_REASONING_EFFORT,
       aspect_ratio: aspectRatio,
-      video_length: DEFAULT_EXTEND_SECONDS,
+      video_length: videoLength,
       resolution_name: resolutionName,
       preset,
       is_video_extension: true,
@@ -2138,6 +2164,11 @@
     }
     if (!selectedVideoUrl) {
       toast('请先选择一个视频。', 'error');
+      return;
+    }
+    if (isLocalBlobUrl(selectedVideoUrl)) {
+      toast('本地上传的视频暂不支持 AI超分，请先选择平台生成的视频。', 'error');
+      syncTimelineAvailability();
       return;
     }
     const videoId = String(currentExtendPostId || extractPostIdFromFileName(selectedVideoUrl)).trim();
@@ -2664,7 +2695,10 @@
 
   if (lengthSelect) {
     const syncLengthMeta = () => {
-      getRequestedVideoLength();
+      getRequestedVideoLength(
+        selectedVideoUrl ? MAX_EXTEND_VIDEO_SECONDS : MAX_VIDEO_SECONDS,
+        selectedVideoUrl ? DEFAULT_EXTEND_SECONDS : MAX_VIDEO_SECONDS
+      );
       updateMeta();
     };
     lengthSelect.addEventListener('input', syncLengthMeta);

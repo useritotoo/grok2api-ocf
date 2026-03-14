@@ -122,7 +122,7 @@ async function requestVideoUpscale(args: {
   try {
     const headers = getDynamicHeaders(args.settings, "/rest/media/video/upscale");
     headers.Cookie = args.cookie;
-    headers.Referer = "https://grok.com";
+    headers.Referer = `https://grok.com/imagine/post/${args.videoId}`;
 
     const response = await fetch(VIDEO_UPSCALE_API, {
       method: "POST",

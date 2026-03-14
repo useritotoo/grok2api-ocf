@@ -128,7 +128,7 @@ body {
 .reference-upload-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: stretch;
   gap: 12px;
 }
 
@@ -138,7 +138,7 @@ body {
 
 .reference-upload-limit {
   font-size: 11px;
-  color: var(--accents-4);
+  color: var(--success);
 }
 
 .reference-card-list {
@@ -425,7 +425,7 @@ body {
   caret-color: transparent !important;
 }
 
-.video-prompt-wrap > .prompt-enhance-wrap {
+.video-prompt-wrap>.prompt-enhance-wrap {
   position: absolute;
   inset: 0;
   width: 100%;
@@ -434,7 +434,7 @@ body {
   pointer-events: none;
 }
 
-.video-prompt-wrap > .prompt-enhance-wrap > .prompt-enhance-actions {
+.video-prompt-wrap>.prompt-enhance-wrap>.prompt-enhance-actions {
   pointer-events: auto;
 }
 

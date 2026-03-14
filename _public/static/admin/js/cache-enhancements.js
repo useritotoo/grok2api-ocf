@@ -210,6 +210,17 @@
     return badge;
   }
 
+  function appendVideoPreviewPlaceholder(preview) {
+    const icon = document.createElement('span');
+    icon.className = 'cache-preview-icon';
+    icon.innerHTML = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 6.5h7a2.5 2.5 0 0 1 2.5 2.5v6A2.5 2.5 0 0 1 14 17.5H7A2.5 2.5 0 0 1 4.5 15V9A2.5 2.5 0 0 1 7 6.5Z"></path><path d="m16.5 10 3-1.8v7.6l-3-1.8"></path></svg>';
+    preview.appendChild(icon);
+    const label = document.createElement('span');
+    label.className = 'cache-preview-label';
+    label.textContent = 'VIDEO';
+    preview.appendChild(label);
+  }
+
   function buildCardShell(selected) {
     const card = document.createElement('article');
     card.className = 'cache-entry-card';
@@ -291,14 +302,7 @@
       mountLazyMedia(img, mediaUrl);
       preview.appendChild(img);
     } else {
-      const video = document.createElement('video');
-      video.preload = 'metadata';
-      video.muted = true;
-      video.playsInline = true;
-      video.setAttribute('aria-hidden', 'true');
-      video.tabIndex = -1;
-      mountLazyMedia(video, mediaUrl);
-      preview.appendChild(video);
+      appendVideoPreviewPlaceholder(preview);
     }
     return preview;
   }

@@ -142,17 +142,37 @@ function responseFromStream(args: {
   return new Response(args.body, { status: 200, headers });
 }
 
-function toUpstreamHeaders(args: { pathname: string; cookie: string; settings: Awaited<ReturnType<typeof getSettings>>["grok"] }): Record<string, string> {
+function mediaAcceptHeader(type: CacheType): string {
+  return type === "video"
+    ? "video/webm,video/mp4,video/*;q=0.9,*/*;q=0.8"
+    : "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8";
+}
+
+function sanitizeUpstreamMediaHeaders(upstream: Headers, args: { cacheSeconds: number; contentType: string }): Headers {
+  const headers = new Headers(upstream);
+  headers.delete("content-security-policy");
+  headers.delete("content-security-policy-report-only");
+  headers.set("Access-Control-Allow-Origin", "*");
+  headers.set("Cache-Control", `public, max-age=${args.cacheSeconds}`);
+  if (args.contentType) headers.set("Content-Type", args.contentType);
+  return headers;
+}
+
+function toUpstreamHeaders(args: {
+  pathname: string;
+  cookie: string;
+  settings: Awaited<ReturnType<typeof getSettings>>["grok"];
+  type: CacheType;
+}): Record<string, string> {
   const headers = getDynamicHeaders(args.settings, args.pathname);
   headers.Cookie = args.cookie;
   delete headers["Content-Type"];
-  headers.Accept =
-    "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8";
-  headers["Sec-Fetch-Dest"] = "document";
-  headers["Sec-Fetch-Mode"] = "navigate";
+  headers.Accept = mediaAcceptHeader(args.type);
+  headers["Sec-Fetch-Dest"] = args.type === "video" ? "video" : "image";
+  headers["Sec-Fetch-Mode"] = "no-cors";
   headers["Sec-Fetch-Site"] = "same-site";
-  headers["Sec-Fetch-User"] = "?1";
-  headers["Upgrade-Insecure-Requests"] = "1";
+  delete headers["Sec-Fetch-User"];
+  delete headers["Upgrade-Insecure-Requests"];
   headers.Referer = "https://grok.com/";
   return headers;
 }
@@ -285,7 +305,7 @@ mediaRoutes.get("/images/:imgPath{.+}", async (c) => {
   const cf = normalizeCfCookie(settingsBundle.grok.cf_clearance ?? "");
   const cookie = cf ? `sso-rw=${chosen.token};sso=${chosen.token};${cf}` : `sso-rw=${chosen.token};sso=${chosen.token}`;
 
-  const baseHeaders = toUpstreamHeaders({ pathname: originalPath, cookie, settings: settingsBundle.grok });
+  const baseHeaders = toUpstreamHeaders({ pathname: originalPath, cookie, settings: settingsBundle.grok, type });
 
   // Range requests: KV can't stream partial content efficiently; proxy from upstream.
   // (If the object is cached and within KV limits, we do support Range by slicing bytes above.)
@@ -351,16 +371,10 @@ mediaRoutes.get("/images/:imgPath{.+}", async (c) => {
       })(),
     );
 
-    const outHeaders = new Headers(upstream.headers);
-    outHeaders.set("Access-Control-Allow-Origin", "*");
-    outHeaders.set("Cache-Control", `public, max-age=${cacheSeconds}`);
-    if (contentType) outHeaders.set("Content-Type", contentType);
+    const outHeaders = sanitizeUpstreamMediaHeaders(upstream.headers, { cacheSeconds, contentType });
     return new Response(toClient, { status: upstream.status, headers: outHeaders });
   }
 
-  const outHeaders = new Headers(upstream.headers);
-  outHeaders.set("Access-Control-Allow-Origin", "*");
-  outHeaders.set("Cache-Control", `public, max-age=${cacheSeconds}`);
-  if (contentType) outHeaders.set("Content-Type", contentType);
+  const outHeaders = sanitizeUpstreamMediaHeaders(upstream.headers, { cacheSeconds, contentType });
   return new Response(upstream.body, { status: upstream.status, headers: outHeaders });
 });

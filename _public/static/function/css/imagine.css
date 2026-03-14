@@ -208,7 +208,7 @@
 .reference-upload-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: stretch;
   gap: 12px;
 }
 
@@ -218,7 +218,7 @@
 
 .reference-upload-limit {
   font-size: 11px;
-  color: var(--accents-4);
+  color: var(--success);
 }
 
 .reference-card-list {
