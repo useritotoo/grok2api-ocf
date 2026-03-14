@@ -183,7 +183,6 @@ export function buildConversationPayload(args: {
       parentPostId: postId,
       aspectRatio,
       videoLength,
-      videoResolution: resolution,
       resolutionName,
     };
     if (isVideoExtension) {

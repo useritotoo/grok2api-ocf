@@ -28,7 +28,6 @@ test("buildConversationPayload keeps resolutionName for initial 720p video gener
     parentPostId: "abcd1234abcd1234abcd1234abcd1234",
     aspectRatio: "16:9",
     videoLength: 6,
-    videoResolution: "HD",
     resolutionName: "720p",
   });
 });
@@ -63,7 +62,6 @@ test("buildConversationPayload maps video extension config to Grok videoGenModel
     parentPostId: "abcd1234abcd1234abcd1234abcd1234",
     aspectRatio: "16:9",
     videoLength: 10,
-    videoResolution: "HD",
     isVideoExtension: true,
     videoExtensionStartTime: 4.25,
     extendPostId: "abcd1234abcd1234abcd1234abcd1234",

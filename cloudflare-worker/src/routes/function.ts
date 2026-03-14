@@ -9,6 +9,11 @@ import {
   normalizeVideoAspectRatio,
 } from "../function/taskHelpers";
 import {
+  buildPromptEnhanceChatBody,
+  extractChatMessageText,
+  PROMPT_ENHANCE_MODEL,
+} from "../function/promptEnhance";
+import {
   getInternalMasterToken,
   requireFunctionAuth,
 } from "../auth";
@@ -49,6 +54,14 @@ interface VideoSessionPayload {
   file_attachment_id: string | null;
   stitch_with_extend: boolean;
 }
+
+interface PromptEnhanceRequestPayload {
+  prompt: string;
+  temperature: number;
+  request_id: string;
+}
+
+const promptEnhanceControllers = new Map<string, AbortController>();
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -106,6 +119,12 @@ function normalizeVideoLength(input: unknown): number {
   return Math.min(15, Math.max(6, value));
 }
 
+function normalizePromptEnhanceTemperature(input: unknown): number {
+  const value = Number(input ?? 0.7);
+  if (!Number.isFinite(value)) return 0.7;
+  return Math.min(2, Math.max(0, value));
+}
+
 const DEFAULT_IMAGINE_BATCH_SIZE = 6;
 const MAX_IMAGINE_BATCH_SIZE = 6;
 export const MAX_IMAGINE_INFINITE_BATCHES = 10;
@@ -152,6 +171,18 @@ function normalizeReasoningEffort(input: unknown): string | null {
   const value = String(input ?? "").trim().toLowerCase();
   if (!value) return null;
   return value;
+}
+
+function buildPromptEnhancePayload(input: Record<string, unknown>): PromptEnhanceRequestPayload {
+  const prompt = String(input.prompt ?? "").trim();
+  const requestId =
+    String(input.request_id ?? input.requestId ?? crypto.randomUUID().replaceAll("-", "")).trim()
+      || crypto.randomUUID().replaceAll("-", "");
+  return {
+    prompt,
+    temperature: normalizePromptEnhanceTemperature(input.temperature),
+    request_id: requestId,
+  };
 }
 
 function extractPostIdFromAssetName(input: unknown): string {
@@ -404,6 +435,20 @@ async function buildInternalRequest(
     headers.set("Authorization", `Bearer ${masterToken}`);
   }
   return new Request(url.toString(), { ...init, headers });
+}
+
+async function runPromptEnhanceRequest(
+  c: any,
+  payload: PromptEnhanceRequestPayload,
+  signal: AbortSignal,
+): Promise<Response> {
+  const request = await buildInternalRequest(c, "/chat/completions", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(buildPromptEnhanceChatBody(payload.prompt, payload.temperature)),
+    signal,
+  });
+  return openAiRoutes.fetch(request, c.env, c.executionCtx);
 }
 
 interface ImagineImageResultItem {
@@ -881,6 +926,99 @@ functionRoutes.post("/v1/function/chat/completions", async (c) => {
     body,
   });
   return openAiRoutes.fetch(request, c.env, c.executionCtx);
+});
+
+functionRoutes.post("/v1/function/prompt/enhance", async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+  const payload = buildPromptEnhancePayload(body);
+  if (!payload.prompt) {
+    return c.json({ error: "Prompt cannot be empty", code: "invalid_prompt" }, 400);
+  }
+
+  const controller = new AbortController();
+  promptEnhanceControllers.set(payload.request_id, controller);
+  const abortHandler = () => controller.abort("client_aborted");
+  c.req.raw.signal.addEventListener("abort", abortHandler, { once: true });
+
+  try {
+    const response = await runPromptEnhanceRequest(c, payload, controller.signal);
+    const rawText = await response.text();
+    let parsed: Record<string, unknown> | null = null;
+    if (rawText) {
+      try {
+        parsed = JSON.parse(rawText) as Record<string, unknown>;
+      } catch {
+        parsed = null;
+      }
+    }
+
+    if (!response.ok) {
+      const errorRecord =
+        parsed && parsed.error && typeof parsed.error === "object"
+          ? (parsed.error as Record<string, unknown>)
+          : null;
+      const message =
+        String(errorRecord?.message ?? parsed?.message ?? rawText ?? "").trim()
+          || `Prompt enhance failed (${response.status})`;
+      return new Response(
+        JSON.stringify({ error: message, code: "prompt_enhance_failed" }),
+        {
+          status: response.status,
+          headers: { "content-type": "application/json; charset=utf-8" },
+        },
+      );
+    }
+
+    const enhancedPrompt = extractChatMessageText(parsed);
+    if (!enhancedPrompt) {
+      return c.json({ error: "Prompt enhance returned empty content", code: "empty_prompt_enhance" }, 502);
+    }
+
+    return c.json({
+      enhanced_prompt: enhancedPrompt,
+      model: PROMPT_ENHANCE_MODEL,
+      request_id: payload.request_id,
+    });
+  } catch (error) {
+    if (controller.signal.aborted) {
+      return new Response(
+        JSON.stringify({ error: "Prompt enhance cancelled", code: "prompt_enhance_cancelled" }),
+        {
+          status: 499,
+          headers: { "content-type": "application/json; charset=utf-8" },
+        },
+      );
+    }
+    return c.json(
+      {
+        error: error instanceof Error ? error.message : String(error),
+        code: "prompt_enhance_failed",
+      },
+      500,
+    );
+  } finally {
+    c.req.raw.signal.removeEventListener("abort", abortHandler);
+    if (promptEnhanceControllers.get(payload.request_id) === controller) {
+      promptEnhanceControllers.delete(payload.request_id);
+    }
+  }
+});
+
+functionRoutes.post("/v1/function/prompt/enhance/stop", async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+  const requestId = String(body.request_id ?? body.requestId ?? "").trim();
+  if (!requestId) {
+    return c.json({ error: "request_id is required", code: "invalid_request_id" }, 400);
+  }
+
+  const controller = promptEnhanceControllers.get(requestId);
+  if (!controller) {
+    return c.json({ status: "not_found", request_id: requestId });
+  }
+
+  promptEnhanceControllers.delete(requestId);
+  controller.abort("cancelled_by_user");
+  return c.json({ status: "cancelling", request_id: requestId });
 });
 
 functionRoutes.get("/v1/function/imagine/config", async (c) => {
