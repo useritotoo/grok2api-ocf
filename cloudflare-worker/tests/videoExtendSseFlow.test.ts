@@ -355,6 +355,7 @@ function buildVideoPage(document: FakeDocument) {
     ["div", "editExtendPostId"],
     ["textarea", "editPromptInput"],
     ["button", "spliceBtn"],
+    ["button", "upscaleBtn"],
   ];
 
   ids.forEach(([tag, id]) => {
@@ -429,6 +430,12 @@ function loadVideoHooks() {
         headers: { "Content-Type": "application/json" },
       });
     }
+    if (url === "/v1/function/video/upscale") {
+      return new Response(JSON.stringify({ video_url: "/images/u_upscaled-video", upscaled: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
     return new Response("", { status: 200 });
   };
 
@@ -477,6 +484,7 @@ function loadVideoHooks() {
     /\}\)\(\);\s*$/,
     `
   window.__videoTestHooks = {
+    startConnection,
     runExtendVideo,
     setState(patch) {
       if (Object.prototype.hasOwnProperty.call(patch, 'selectedVideoUrl')) selectedVideoUrl = String(patch.selectedVideoUrl || '');
@@ -493,6 +501,8 @@ function loadVideoHooks() {
         currentTaskId,
         statusText: statusText ? statusText.textContent : '',
         progressText: progressText ? progressText.textContent : '',
+        aspectValue: aspectValue ? aspectValue.textContent : '',
+        presetValue: presetValue ? presetValue.textContent : '',
         previewUrl: currentPreviewItem ? String(currentPreviewItem.dataset.url || '') : '',
         selectedVideoUrl,
         currentExtendPostId,
@@ -507,12 +517,14 @@ function loadVideoHooks() {
 
   return {
     hooks: (windowObject.__videoTestHooks || {}) as {
+      startConnection: () => Promise<void>;
       runExtendVideo: () => Promise<void>;
       setState: (patch: Record<string, unknown>) => void;
       getState: () => Record<string, unknown>;
     },
     eventSources: FakeEventSource.instances,
     fetchCalls,
+    document,
   };
 }
 
@@ -600,4 +612,94 @@ test("video extension completes once a streamed video url has been rendered", as
   assert.equal(state.statusText, "延长完成");
   assert.equal(state.progressText, "100%");
   assert.equal(state.previewUrl, renderedUrl);
+});
+
+test("video settings panel updates aspect ratio and preset immediately when selections change", () => {
+  const { hooks, document } = loadVideoHooks();
+  const ratioSelect = document.getElementById("ratioSelect");
+  const presetSelect = document.getElementById("presetSelect");
+
+  if (ratioSelect) {
+    ratioSelect.value = "9:16";
+    ratioSelect.dispatchEvent({ type: "change", target: ratioSelect });
+  }
+  if (presetSelect) {
+    presetSelect.value = "spicy";
+    presetSelect.dispatchEvent({ type: "change", target: presetSelect });
+  }
+
+  const state = hooks.getState();
+  assert.equal(state.aspectValue, "9:16");
+  assert.equal(state.presetValue, "spicy");
+});
+
+test("video generation request payload keeps the selected aspect ratio and preset", async () => {
+  const { hooks, fetchCalls, eventSources, document } = loadVideoHooks();
+  const promptInput = document.getElementById("promptInput");
+  const ratioSelect = document.getElementById("ratioSelect");
+  const presetSelect = document.getElementById("presetSelect");
+  const resolutionSelect = document.getElementById("resolutionSelect");
+
+  if (promptInput) promptInput.value = "Animate the neon rain";
+  if (ratioSelect) ratioSelect.value = "1:1";
+  if (presetSelect) presetSelect.value = "fun";
+  if (resolutionSelect) resolutionSelect.value = "480p";
+
+  await hooks.startConnection();
+
+  try {
+    const startCall = fetchCalls.find((entry) => entry.url === "/v1/function/video/start");
+    assert.ok(startCall?.init?.body);
+    const payload = JSON.parse(String(startCall.init.body)) as Record<string, unknown>;
+    assert.equal(payload.aspect_ratio, "1:1");
+    assert.equal(payload.preset, "fun");
+    assert.equal(payload.resolution_name, "480p");
+  } finally {
+    eventSources[0]?.emitMessage("[DONE]");
+  }
+});
+
+test("video extension keeps the selected preset even when prompt is empty", async () => {
+  const { hooks, fetchCalls, eventSources, document } = loadVideoHooks();
+  const presetSelect = document.getElementById("presetSelect");
+  const editPromptInput = document.getElementById("editPromptInput");
+
+  if (presetSelect) presetSelect.value = "custom";
+  if (editPromptInput) editPromptInput.value = "";
+
+  hooks.setState({
+    selectedVideoUrl: "https://example.com/images/source-video",
+    currentExtendPostId: "abcd1234abcd1234abcd1234abcd1234",
+    originalFileAttachmentId: "orig1234orig1234orig1234orig1234",
+    lockedTimestampMs: 2500,
+  });
+
+  await hooks.runExtendVideo();
+
+  try {
+    const startCall = fetchCalls.filter((entry) => entry.url === "/v1/function/video/start").at(-1);
+    assert.ok(startCall?.init?.body);
+    const payload = JSON.parse(String(startCall.init.body)) as Record<string, unknown>;
+    assert.equal(payload.preset, "custom");
+  } finally {
+    eventSources[0]?.emitMessage("[DONE]");
+  }
+});
+
+test("video workspace AI upscale replaces the selected source with the upscaled video url", async () => {
+  const { hooks, document } = loadVideoHooks();
+  const upscaleBtn = document.getElementById("upscaleBtn");
+
+  hooks.setState({
+    selectedVideoUrl: "https://example.com/images/source-video",
+    currentExtendPostId: "abcd1234abcd1234abcd1234abcd1234",
+    originalFileAttachmentId: "orig1234orig1234orig1234orig1234",
+    lockedTimestampMs: 2500,
+  });
+
+  upscaleBtn?.click();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const state = hooks.getState();
+  assert.equal(state.selectedVideoUrl, "/images/u_upscaled-video");
 });

@@ -43,6 +43,7 @@
   const editExtendPostId = document.getElementById('editExtendPostId');
   const editPromptInput = document.getElementById('editPromptInput');
   const spliceBtn = document.getElementById('spliceBtn');
+  const upscaleBtn = document.getElementById('upscaleBtn');
 
   let currentSource = null;
   let currentTaskId = '';
@@ -72,6 +73,8 @@
   const DEFAULT_REASONING_EFFORT = 'low';
   const EDIT_TIMELINE_MAX = 100000;
   const DEFAULT_EXTEND_SECONDS = 10;
+  const MIN_VIDEO_SECONDS = 6;
+  const MAX_VIDEO_SECONDS = 15;
   const TAIL_FRAME_GUARD_MS = 80;
   const APPROX_VIDEO_FPS = 30;
   const MAX_REFERENCE_FILES = 7;
@@ -344,18 +347,46 @@
     }
   }
 
+  function clampVideoLength(value, fallback) {
+    const parsed = Math.floor(Number(value ?? fallback));
+    if (!Number.isFinite(parsed)) {
+      return fallback;
+    }
+    return Math.max(MIN_VIDEO_SECONDS, Math.min(MAX_VIDEO_SECONDS, parsed));
+  }
+
+  function getRequestedAspectRatio() {
+    return ratioSelect ? String(ratioSelect.value || '').trim() || '3:2' : '3:2';
+  }
+
+  function getRequestedVideoLength() {
+    const safe = clampVideoLength(lengthSelect ? lengthSelect.value : MAX_VIDEO_SECONDS, MAX_VIDEO_SECONDS);
+    if (lengthSelect && String(lengthSelect.value) !== String(safe)) {
+      lengthSelect.value = String(safe);
+    }
+    return safe;
+  }
+
+  function getRequestedResolutionName() {
+    return resolutionSelect ? String(resolutionSelect.value || '').trim() || '480p' : '480p';
+  }
+
+  function getRequestedPreset() {
+    return presetSelect ? String(presetSelect.value || '').trim() || 'normal' : 'normal';
+  }
+
   function updateMeta() {
-    if (aspectValue && ratioSelect) {
-      aspectValue.textContent = ratioSelect.value;
+    if (aspectValue) {
+      aspectValue.textContent = getRequestedAspectRatio();
     }
-    if (lengthValue && lengthSelect) {
-      lengthValue.textContent = `${lengthSelect.value}s`;
+    if (lengthValue) {
+      lengthValue.textContent = `${getRequestedVideoLength()}s`;
     }
-    if (resolutionValue && resolutionSelect) {
-      resolutionValue.textContent = resolutionSelect.value;
+    if (resolutionValue) {
+      resolutionValue.textContent = getRequestedResolutionName();
     }
-    if (presetValue && presetSelect) {
-      presetValue.textContent = presetSelect.value;
+    if (presetValue) {
+      presetValue.textContent = getRequestedPreset();
     }
   }
 
@@ -389,10 +420,15 @@
   }
 
   function syncTimelineAvailability() {
-    if (!editTimeline) return;
     const disabled = !selectedVideoUrl || (isRunning && currentRunKind === 'splice');
-    editTimeline.disabled = disabled;
-    editTimeline.classList.toggle('is-disabled', disabled);
+    if (editTimeline) {
+      editTimeline.disabled = disabled;
+      editTimeline.classList.toggle('is-disabled', disabled);
+    }
+    if (upscaleBtn) {
+      const hasUpscaleTarget = Boolean(currentExtendPostId || extractPostIdFromFileName(selectedVideoUrl));
+      upscaleBtn.disabled = disabled || !hasUpscaleTarget;
+    }
   }
 
   function updateDeleteZoneTrack(inputEl) {
@@ -1089,6 +1125,29 @@
     return data && data.task_id ? String(data.task_id) : '';
   }
 
+  async function requestVideoUpscale(authHeader, payload) {
+    const res = await fetch('/v1/function/video/upscale', {
+      method: 'POST',
+      headers: {
+        ...buildAuthHeaders(authHeader),
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(payload)
+    });
+    const text = await res.text();
+    let data = null;
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch (e) {
+      data = null;
+    }
+    if (!res.ok) {
+      const message = (data && data.error) || text || 'Failed to upscale video';
+      throw new Error(String(message));
+    }
+    return data || {};
+  }
+
   async function loadCachedVideos() {
     const authHeader = await ensureFunctionKey();
     if (authHeader === null) {
@@ -1465,6 +1524,133 @@
     }
   }
 
+  function buildGenerationPayload(prompt, imageUrls) {
+    const aspectRatio = getRequestedAspectRatio();
+    const videoLength = getRequestedVideoLength();
+    const resolutionName = getRequestedResolutionName();
+    const preset = getRequestedPreset();
+    if (window.FunctionPayloads && typeof FunctionPayloads.buildVideoStartPayload === 'function') {
+      return FunctionPayloads.buildVideoStartPayload({
+        prompt,
+        aspectRatio,
+        videoLength,
+        resolutionName,
+        preset,
+        reasoningEffort: DEFAULT_REASONING_EFFORT,
+        referenceUrl: imageUrls
+      });
+    }
+    return {
+      prompt,
+      image_reference: buildImageReferencePayload(imageUrls),
+      reasoning_effort: DEFAULT_REASONING_EFFORT,
+      aspect_ratio: aspectRatio,
+      video_length: videoLength,
+      resolution_name: resolutionName,
+      preset
+    };
+  }
+
+  function buildExtensionPayload(prompt) {
+    const aspectRatio = getRequestedAspectRatio();
+    const resolutionName = getRequestedResolutionName();
+    const preset = getRequestedPreset();
+    if (window.FunctionPayloads && typeof FunctionPayloads.buildVideoStartPayload === 'function') {
+      return FunctionPayloads.buildVideoStartPayload({
+        prompt,
+        aspectRatio,
+        videoLength: DEFAULT_EXTEND_SECONDS,
+        resolutionName,
+        preset,
+        reasoningEffort: DEFAULT_REASONING_EFFORT,
+        extension: {
+          extendPostId: currentExtendPostId,
+          startTime: Math.max(0, lockedTimestampMs / 1000),
+          originalPostId: currentExtendPostId,
+          fileAttachmentId: originalFileAttachmentId || currentExtendPostId,
+          stitchWithExtend: true
+        }
+      });
+    }
+    return {
+      prompt,
+      reasoning_effort: DEFAULT_REASONING_EFFORT,
+      aspect_ratio: aspectRatio,
+      video_length: DEFAULT_EXTEND_SECONDS,
+      resolution_name: resolutionName,
+      preset,
+      is_video_extension: true,
+      extend_post_id: currentExtendPostId,
+      video_extension_start_time: Math.max(0, lockedTimestampMs / 1000),
+      original_post_id: currentExtendPostId,
+      file_attachment_id: originalFileAttachmentId || currentExtendPostId,
+      stitch_with_extend: true
+    };
+  }
+
+  function getSelectedHistoryItem() {
+    if (!videoStage || !selectedVideoItemId) return null;
+    return videoStage.querySelector(`.video-item[data-index="${selectedVideoItemId}"]`);
+  }
+
+  async function runUpscaleSelectedVideo() {
+    if (isRunning) {
+      toast('请先停止当前任务，再执行 AI超分。', 'warning');
+      return;
+    }
+    if (!selectedVideoUrl) {
+      toast('请先选择一个视频。', 'error');
+      return;
+    }
+    const videoId = String(currentExtendPostId || extractPostIdFromFileName(selectedVideoUrl)).trim();
+    if (!videoId) {
+      toast('当前视频缺少可用于超分的 ID。', 'error');
+      return;
+    }
+
+    const authHeader = await ensureFunctionKey();
+    if (authHeader === null) {
+      toast(tSafe('common.configurePublicKey', 'Configure Function Key first.'), 'error');
+      window.location.href = '/login';
+      return;
+    }
+
+    if (upscaleBtn) {
+      upscaleBtn.disabled = true;
+    }
+
+    try {
+      const payload = await requestVideoUpscale(authHeader, {
+        video_id: videoId,
+        video_url: selectedVideoUrl
+      });
+      const nextUrl = String((payload && payload.video_url) || '').trim();
+      if (!nextUrl) {
+        throw new Error('Missing upscaled video url');
+      }
+      const selectedItem = getSelectedHistoryItem();
+      if (selectedItem) {
+        updateItemLinks(selectedItem, nextUrl, {
+          name: selectedItem.dataset.name || basename(nextUrl),
+          extendPostId: selectedItem.dataset.postId || videoId,
+          rootAttachmentId: selectedItem.dataset.rootAttachmentId || selectedItem.dataset.postId || videoId
+        });
+        selectedItem.dataset.workspaceSyncedUrl = '';
+      }
+      applyWorkspaceVideo(nextUrl, {
+        name: basename(nextUrl),
+        extendPostId: videoId,
+        rootAttachmentId: originalFileAttachmentId || videoId,
+        forceReload: true
+      });
+      toast('AI超分完成。', 'success');
+    } catch (e) {
+      toast(e && e.message ? e.message : 'AI超分失败。', 'error');
+    } finally {
+      syncTimelineAvailability();
+    }
+  }
+
   async function startConnection() {
     if (isRunning) {
       toast(tSafe('video.alreadyGenerating', 'Task already running.'), 'warning');
@@ -1498,25 +1684,7 @@
     initPreviewSlot(currentRunKind);
     setStatus('connecting', tSafe('common.connecting', 'Connecting'));
 
-    const payload = (window.FunctionPayloads && typeof FunctionPayloads.buildVideoStartPayload === 'function')
-      ? FunctionPayloads.buildVideoStartPayload({
-          prompt,
-          aspectRatio: ratioSelect ? ratioSelect.value : '3:2',
-          videoLength: lengthSelect ? parseInt(lengthSelect.value, 10) : 15,
-          resolutionName: resolutionSelect ? resolutionSelect.value : '720p',
-          preset: presetSelect ? presetSelect.value : 'normal',
-          reasoningEffort: DEFAULT_REASONING_EFFORT,
-          referenceUrl: imageUrls
-        })
-      : {
-          prompt,
-          image_reference: buildImageReferencePayload(imageUrls),
-          reasoning_effort: DEFAULT_REASONING_EFFORT,
-          aspect_ratio: ratioSelect ? ratioSelect.value : '3:2',
-          video_length: lengthSelect ? parseInt(lengthSelect.value, 10) : 15,
-          resolution_name: resolutionSelect ? resolutionSelect.value : '720p',
-          preset: presetSelect ? presetSelect.value : 'normal'
-        };
+    const payload = buildGenerationPayload(prompt, imageUrls);
 
     let taskId = '';
     try {
@@ -1608,36 +1776,7 @@
     }
 
     const prompt = editPromptInput ? editPromptInput.value.trim() : '';
-    const payload = (window.FunctionPayloads && typeof FunctionPayloads.buildVideoStartPayload === 'function')
-      ? FunctionPayloads.buildVideoStartPayload({
-          prompt,
-          aspectRatio: ratioSelect ? ratioSelect.value : '3:2',
-          videoLength: DEFAULT_EXTEND_SECONDS,
-          resolutionName: resolutionSelect ? resolutionSelect.value : '720p',
-          preset: prompt ? (presetSelect ? presetSelect.value : 'normal') : 'spicy',
-          reasoningEffort: DEFAULT_REASONING_EFFORT,
-          extension: {
-            extendPostId: currentExtendPostId,
-            startTime: Math.max(0, lockedTimestampMs / 1000),
-            originalPostId: currentExtendPostId,
-            fileAttachmentId: originalFileAttachmentId || currentExtendPostId,
-            stitchWithExtend: true
-          }
-        })
-      : {
-          prompt,
-          reasoning_effort: DEFAULT_REASONING_EFFORT,
-          aspect_ratio: ratioSelect ? ratioSelect.value : '3:2',
-          video_length: DEFAULT_EXTEND_SECONDS,
-          resolution_name: resolutionSelect ? resolutionSelect.value : '720p',
-          preset: prompt ? (presetSelect ? presetSelect.value : 'normal') : 'spicy',
-          is_video_extension: true,
-          extend_post_id: currentExtendPostId,
-          video_extension_start_time: Math.max(0, lockedTimestampMs / 1000),
-          original_post_id: currentExtendPostId,
-          file_attachment_id: originalFileAttachmentId || currentExtendPostId,
-          stitch_with_extend: true
-        };
+    const payload = buildExtensionPayload(prompt);
 
     isRunning = true;
     currentRunKind = 'splice';
@@ -1979,6 +2118,33 @@
     });
   }
 
+  if (ratioSelect) {
+    ratioSelect.addEventListener('change', () => {
+      updateMeta();
+    });
+  }
+
+  if (lengthSelect) {
+    const syncLengthMeta = () => {
+      getRequestedVideoLength();
+      updateMeta();
+    };
+    lengthSelect.addEventListener('input', syncLengthMeta);
+    lengthSelect.addEventListener('change', syncLengthMeta);
+  }
+
+  if (resolutionSelect) {
+    resolutionSelect.addEventListener('change', () => {
+      updateMeta();
+    });
+  }
+
+  if (presetSelect) {
+    presetSelect.addEventListener('change', () => {
+      updateMeta();
+    });
+  }
+
   if (editTimeline) {
     editTimeline.addEventListener('input', () => {
       if (!editVideo) return;
@@ -2017,6 +2183,12 @@
   if (spliceBtn) {
     spliceBtn.addEventListener('click', () => {
       runExtendVideo();
+    });
+  }
+
+  if (upscaleBtn) {
+    upscaleBtn.addEventListener('click', () => {
+      runUpscaleSelectedVideo();
     });
   }
 

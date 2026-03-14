@@ -142,3 +142,15 @@ test("buildVideoStartPayload includes video extension fields when provided", () 
     stitch_with_extend: true,
   });
 });
+
+test("buildVideoStartPayload caps video length at 15 seconds", () => {
+  const payload = buildVideoStartPayload({
+    prompt: "Animate this city street",
+    aspectRatio: "3:2",
+    videoLength: 30,
+    resolutionName: "480p",
+    preset: "normal",
+  });
+
+  assert.equal(payload.video_length, 15);
+});

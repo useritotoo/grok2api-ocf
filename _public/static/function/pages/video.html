@@ -75,14 +75,14 @@
               <div class="settings-block resolution-block">
                 <label class="field-label" for="resolutionSelect" data-i18n="video.resolution">分辨率</label>
                 <select id="resolutionSelect" class="geist-input">
-                  <option value="480p">480p</option>
-                  <option value="720p" selected>720p</option>
+                  <option value="480p" selected>480p</option>
+                  <option value="720p">720p</option>
                 </select>
               </div>
 
               <div class="settings-block length-block">
                 <label class="field-label" for="lengthSelect" data-i18n="video.duration">视频时长</label>
-                <input id="lengthSelect" class="geist-input" type="number" min="6" max="30" step="1" value="15">
+                <input id="lengthSelect" class="geist-input" type="number" min="6" max="15" step="1" value="15">
               </div>
 
               <div class="settings-block preset-block">
@@ -115,7 +115,7 @@
 
           <div id="editPanel" class="video-card edit-panel">
             <div class="video-preview-header">
-              <div class="card-title">视频延长工作区</div>
+              <div class="card-title">视频工作区</div>
               <div class="preview-actions">
                 <button id="pickCachedVideoBtn" class="geist-button-outline text-xs px-3" type="button">从缓存选择</button>
                 <button id="uploadWorkVideoBtn" class="geist-button-outline text-xs px-3" type="button">上传本地视频</button>
@@ -197,6 +197,15 @@
                     <path d="M12 5v14" />
                   </svg>
                   <span>开始延长</span>
+                </button>
+                <button id="upscaleBtn" class="geist-button-outline gap-2" type="button">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                    stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M12 3v18" />
+                    <path d="M7 8l5-5 5 5" />
+                    <path d="M5 21h14" />
+                  </svg>
+                  <span>AI超分</span>
                 </button>
               </div>
             </div>

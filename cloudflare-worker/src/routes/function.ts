@@ -23,6 +23,7 @@ import { applyCooldown, recordTokenFailure, selectBestToken } from "../repo/toke
 import { getSettings, normalizeCfCookie } from "../settings";
 import { buildInternalRequestUrl } from "./functionHelpers";
 import { ImagineWsError, collectImagineWsImages } from "../grok/imagineExperimental";
+import { extractVideoId, upscaleVideoById } from "../grok/video";
 
 interface ImagineSessionPayload {
   prompt: string;
@@ -102,7 +103,7 @@ function parseBoolean(input: unknown): boolean | null {
 function normalizeVideoLength(input: unknown): number {
   const value = Math.floor(Number(input ?? 6));
   if (!Number.isFinite(value)) return 6;
-  return Math.min(30, Math.max(6, value));
+  return Math.min(15, Math.max(6, value));
 }
 
 const DEFAULT_IMAGINE_BATCH_SIZE = 6;
@@ -183,6 +184,27 @@ function firstNonEmptyString(input: unknown, paths: string[][]): string {
     }
   }
   return "";
+}
+
+function base64UrlEncodeString(input: string): string {
+  const bytes = new TextEncoder().encode(input);
+  let binary = "";
+  for (const b of bytes) binary += String.fromCharCode(b);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function encodeAssetPath(raw: string): string {
+  try {
+    const url = new URL(raw);
+    return `u_${base64UrlEncodeString(url.toString())}`;
+  } catch {
+    const pathname = raw.startsWith("/") ? raw : `/${raw}`;
+    return `p_${base64UrlEncodeString(pathname)}`;
+  }
+}
+
+function toProxyAssetUrl(raw: string): string {
+  return `/images/${encodeURIComponent(encodeAssetPath(raw))}`;
 }
 
 function normalizeWebSocketUrl(input: unknown): string {
@@ -1160,6 +1182,46 @@ functionRoutes.get("/v1/function/video/cache/list", async (c) => {
         root_attachment_id: postId || undefined,
       };
     }),
+  });
+});
+
+functionRoutes.post("/v1/function/video/upscale", async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+  const videoUrl = extractOptionalString(body.video_url);
+  const videoId =
+    extractOptionalString(body.video_id) ||
+    (videoUrl ? extractVideoId(videoUrl) : "") ||
+    "";
+
+  if (!videoId) {
+    return c.json({ error: "video_id is required", code: "invalid_video_id" }, 400);
+  }
+
+  const settings = await getSettings(c.env);
+  const chosen = await selectBestToken(c.env.DB, "grok-imagine-1.0-video");
+  if (!chosen) {
+    return c.json({ error: "No available tokens for video upscale", code: "no_token" }, 503);
+  }
+
+  const cf = normalizeCfCookie(settings.grok.cf_clearance ?? "");
+  const cookie = cf
+    ? `sso-rw=${chosen.token};sso=${chosen.token};${cf}`
+    : `sso-rw=${chosen.token};sso=${chosen.token}`;
+  const result = await upscaleVideoById({
+    videoId,
+    cookie,
+    settings: settings.grok,
+  });
+
+  if (!result.upscaled || !result.videoUrl) {
+    return c.json({ error: "Video upscale failed", code: "video_upscale_failed" }, 502);
+  }
+
+  return c.json({
+    video_id: videoId,
+    hd_media_url: result.videoUrl,
+    video_url: toProxyAssetUrl(result.videoUrl),
+    upscaled: true,
   });
 });
 

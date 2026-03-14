@@ -52,11 +52,17 @@
     return payload;
   }
 
+  function normalizeVideoLength(value) {
+    const parsed = Math.floor(Number(value ?? 6));
+    if (!Number.isFinite(parsed)) return 6;
+    return Math.min(15, Math.max(6, parsed));
+  }
+
   function buildVideoStartPayload(args) {
     const payload = {
       prompt: String((args && args.prompt) || "").trim(),
       aspect_ratio: String((args && args.aspectRatio) || "3:2").trim() || "3:2",
-      video_length: Number((args && args.videoLength) || 6),
+      video_length: normalizeVideoLength(args && args.videoLength),
       resolution_name: String((args && args.resolutionName) || "480p").trim() || "480p",
       preset: String((args && args.preset) || "normal").trim() || "normal",
       reasoning_effort: (args && args.reasoningEffort) == null ? null : String(args.reasoningEffort).trim() || null,

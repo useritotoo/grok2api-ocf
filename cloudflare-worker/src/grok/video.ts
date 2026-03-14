@@ -114,6 +114,59 @@ export function extractVideoId(videoUrl: string): string {
   return "";
 }
 
+async function requestVideoUpscale(args: {
+  videoId: string;
+  cookie: string;
+  settings: GrokSettings;
+}): Promise<{ videoUrl: string; upscaled: boolean }> {
+  try {
+    const headers = getDynamicHeaders(args.settings, "/rest/media/video/upscale");
+    headers.Cookie = args.cookie;
+    headers.Referer = "https://grok.com";
+
+    const response = await fetch(VIDEO_UPSCALE_API, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ videoId: args.videoId }),
+    });
+    if (!response.ok) {
+      console.warn(`Video upscale failed with status ${response.status}`);
+      return { videoUrl: "", upscaled: false };
+    }
+
+    const payload = (await response.json().catch(() => ({}))) as {
+      hdMediaUrl?: unknown;
+    };
+    const hdMediaUrl = String(payload.hdMediaUrl ?? "").trim();
+    if (!hdMediaUrl) {
+      return { videoUrl: "", upscaled: false };
+    }
+
+    return { videoUrl: hdMediaUrl, upscaled: true };
+  } catch (error) {
+    console.warn(
+      `Video upscale request failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return { videoUrl: "", upscaled: false };
+  }
+}
+
+export async function upscaleVideoById(args: {
+  videoId: string;
+  cookie: string;
+  settings: GrokSettings;
+}): Promise<{ videoUrl: string; upscaled: boolean }> {
+  const videoId = String(args.videoId ?? "").trim();
+  if (!videoId) {
+    return { videoUrl: "", upscaled: false };
+  }
+  return requestVideoUpscale({
+    videoId,
+    cookie: args.cookie,
+    settings: args.settings,
+  });
+}
+
 export async function upscaleVideoUrl(args: {
   videoUrl: string;
   cookie: string;
@@ -124,34 +177,14 @@ export async function upscaleVideoUrl(args: {
     return { videoUrl: args.videoUrl, upscaled: false };
   }
 
-  try {
-    const headers = getDynamicHeaders(args.settings, "/rest/media/video/upscale");
-    headers.Cookie = args.cookie;
-    headers.Referer = "https://grok.com";
-
-    const response = await fetch(VIDEO_UPSCALE_API, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ videoId }),
-    });
-    if (!response.ok) {
-      console.warn(`Video upscale failed with status ${response.status}`);
-      return { videoUrl: args.videoUrl, upscaled: false };
-    }
-
-    const payload = (await response.json().catch(() => ({}))) as {
-      hdMediaUrl?: unknown;
-    };
-    const hdMediaUrl = String(payload.hdMediaUrl ?? "").trim();
-    if (!hdMediaUrl) {
-      return { videoUrl: args.videoUrl, upscaled: false };
-    }
-
-    return { videoUrl: hdMediaUrl, upscaled: true };
-  } catch (error) {
-    console.warn(
-      `Video upscale request failed: ${error instanceof Error ? error.message : String(error)}`,
-    );
+  const result = await requestVideoUpscale({
+    videoId,
+    cookie: args.cookie,
+    settings: args.settings,
+  });
+  if (!result.upscaled || !result.videoUrl) {
     return { videoUrl: args.videoUrl, upscaled: false };
   }
+
+  return result;
 }

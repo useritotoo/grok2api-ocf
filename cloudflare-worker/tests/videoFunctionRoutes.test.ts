@@ -51,6 +51,13 @@ function createFakeDb() {
           return this;
         },
         first<T>() {
+          if (sql.includes("SELECT token FROM tokens")) {
+            const tokenType = String(params[0] ?? "");
+            if (tokenType === "sso") {
+              return Promise.resolve(({ token: "worker-token" } as unknown) as T);
+            }
+            return Promise.resolve(null);
+          }
           if (sql === "SELECT value FROM settings WHERE key = ?") {
             const key = String(params[0] ?? "");
             const value = settings.get(key);
@@ -206,6 +213,38 @@ test("function video start stores multiple reference images in the session paylo
   });
 });
 
+test("function video start caps requested duration at 15 seconds", async () => {
+  const fakeDb = createFakeDb();
+  const response = await (worker.fetch as any)(
+    new Request("https://example.com/v1/function/video/start", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer function-secret",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        prompt: "Animate the skyline",
+        aspect_ratio: "16:9",
+        video_length: 30,
+        resolution_name: "480p",
+        preset: "normal",
+      }),
+    }),
+    {
+      DB: fakeDb.db,
+      BUILD_SHA: "dev",
+      CACHE_RESET_TZ_OFFSET_MINUTES: "480",
+      KV_CACHE_MAX_BYTES: "26214400",
+      KV_CLEANUP_BATCH: "200",
+    } as any,
+    createExecutionContext(),
+  );
+
+  assert.equal(response.status, 200);
+  const payload = (await response.json()) as { task_id: string };
+  assert.equal(fakeDb.sessions.get(payload.task_id)?.video_length, 15);
+});
+
 test("function video cache list returns view urls for cached videos", async () => {
   const fakeDb = createFakeDb();
   const response = await (worker.fetch as any)(
@@ -232,4 +271,48 @@ test("function video cache list returns view urls for cached videos", async () =
     "/images/users-demo-generated-abcd1234abcd1234abcd1234abcd1234-generated_video_hd.mp4",
   );
   assert.equal(payload.items[0]?.preview_url, payload.items[0]?.view_url);
+});
+
+test("function video upscale returns a proxied upscaled video url", async () => {
+  const fakeDb = createFakeDb();
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    assert.equal(String(input), "https://grok.com/rest/media/video/upscale");
+    return new Response(JSON.stringify({
+      hdMediaUrl: "https://assets.grok.com/users/demo/generated/abcd1234abcd1234abcd1234abcd1234/generated_video_hd.mp4",
+    }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  }) as typeof fetch;
+
+  try {
+    const response = await (worker.fetch as any)(
+      new Request("https://example.com/v1/function/video/upscale", {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer function-secret",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          video_id: "abcd1234abcd1234abcd1234abcd1234",
+        }),
+      }),
+      {
+        DB: fakeDb.db,
+        BUILD_SHA: "dev",
+        CACHE_RESET_TZ_OFFSET_MINUTES: "480",
+        KV_CACHE_MAX_BYTES: "26214400",
+        KV_CLEANUP_BATCH: "200",
+      } as any,
+      createExecutionContext(),
+    );
+
+    assert.equal(response.status, 200);
+    const payload = (await response.json()) as { video_url?: string; upscaled?: boolean };
+    assert.equal(payload.upscaled, true);
+    assert.match(String(payload.video_url ?? ""), /^\/images\/u_/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
