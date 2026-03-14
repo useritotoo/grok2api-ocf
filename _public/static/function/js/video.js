@@ -1222,6 +1222,30 @@
     lastMentionContext = null;
   }
 
+  function updateReferenceMentionMenuPlacement() {
+    if (!referenceMentionMenu || !promptRichInput || referenceMentionMenu.classList.contains('hidden')) return;
+    const host = promptRichInput.parentElement;
+    if (!host || typeof host.getBoundingClientRect !== 'function') return;
+    const viewportHeight = Math.max(
+      Number(window.innerHeight) || 0,
+      document.documentElement ? Number(document.documentElement.clientHeight) || 0 : 0,
+    );
+    const hostRect = host.getBoundingClientRect();
+    const menuHeight = Math.max(
+      Number(referenceMentionMenu.scrollHeight) || 0,
+      Number(referenceMentionMenu.offsetHeight) || 0,
+      120,
+    );
+    const gap = 10;
+    const spaceBelow = Math.max(0, viewportHeight - hostRect.bottom - gap);
+    const spaceAbove = Math.max(0, hostRect.top - gap);
+    const shouldPlaceAbove = spaceBelow < Math.min(menuHeight, 176) && spaceAbove > spaceBelow;
+    const availableHeight = shouldPlaceAbove ? spaceAbove : spaceBelow;
+    const nextMaxHeight = Math.max(120, Math.min(220, Math.floor(availableHeight || 0)));
+    referenceMentionMenu.classList.toggle('is-above', shouldPlaceAbove);
+    referenceMentionMenu.style.maxHeight = `${nextMaxHeight}px`;
+  }
+
   function renderReferenceMentionMenu() {
     if (!referenceMentionMenu || !promptRichInput) return;
     const context = getMentionContext();
@@ -1279,6 +1303,7 @@
       referenceMentionMenu.appendChild(button);
     });
     referenceMentionMenu.classList.remove('hidden');
+    updateReferenceMentionMenuPlacement();
   }
 
   function ensurePromptRichEditor() {
@@ -1407,6 +1432,10 @@
     promptInput.addEventListener('input', () => {
       syncPromptRichInputFromTextarea();
       renderReferenceMentionMenu();
+    });
+
+    window.addEventListener('resize', () => {
+      updateReferenceMentionMenuPlacement();
     });
 
     document.addEventListener('click', (event) => {

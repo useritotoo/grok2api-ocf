@@ -5,10 +5,15 @@ import { requireApiAuth, requireModelAuth } from "../auth";
 import { getCurrentConfig } from "../currentConfig";
 import { getSettings, normalizeCfCookie } from "../settings";
 import { isValidModel, MODEL_CONFIG } from "../grok/models";
-import { extractContent, buildConversationPayload, sendConversationRequest } from "../grok/conversation";
+import {
+  extractContent,
+  buildConversationPayload,
+  prepareVideoReferencePrompt,
+  sendConversationRequest,
+} from "../grok/conversation";
 import { uploadAttachment, uploadImage } from "../grok/upload";
 import { getDynamicHeaders } from "../grok/headers";
-import { createMediaPost, createPost } from "../grok/create";
+import { createMediaPost } from "../grok/create";
 import { createOpenAiStreamFromGrokNdjson, parseOpenAiFromGrokNdjson } from "../grok/processor";
 import { buildVideoGenerationPlan, upscaleVideoUrl } from "../grok/video";
 import {
@@ -42,17 +47,20 @@ function getClientIp(req: Request): string {
   );
 }
 
-async function mapLimit<T, R>(
+export async function mapLimit<T, R>(
   items: T[],
   limit: number,
   fn: (item: T) => Promise<R>,
 ): Promise<R[]> {
-  const results: R[] = [];
-  const queue = items.slice();
-  const workers = Array.from({ length: Math.max(1, limit) }, async () => {
-    while (queue.length) {
-      const item = queue.shift() as T;
-      results.push(await fn(item));
+  if (!items.length) return [];
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+  const workerCount = Math.max(1, Math.min(Math.floor(limit || 1), items.length));
+  const workers = Array.from({ length: workerCount }, async () => {
+    while (true) {
+      const currentIndex = nextIndex++;
+      if (currentIndex >= items.length) break;
+      results[currentIndex] = await fn(items[currentIndex] as T);
     }
   });
   await Promise.all(workers);
@@ -1387,6 +1395,9 @@ openAiRoutes.post("/chat/completions", async (c) => {
           }
         }
 
+        const preparedVideoPrompt = isVideoModel
+          ? prepareVideoReferencePrompt(content, imgIds, imgUris).promptText
+          : content;
         let postId: string | undefined;
         if (isVideoModel) {
           const requestedParentPostId =
@@ -1394,12 +1405,9 @@ openAiRoutes.post("/chat/completions", async (c) => {
             String(body.video_config?.parent_post_id ?? "").trim();
           if (requestedParentPostId) {
             postId = requestedParentPostId;
-          } else if (imgUris.length) {
-            const post = await createPost(imgUris[0]!, cookie, settingsBundle.grok);
-            postId = post.postId || undefined;
           } else {
             const post = await createMediaPost(
-              { mediaType: "MEDIA_POST_TYPE_VIDEO", prompt: content },
+              { mediaType: "MEDIA_POST_TYPE_VIDEO", prompt: preparedVideoPrompt },
               cookie,
               settingsBundle.grok,
             );

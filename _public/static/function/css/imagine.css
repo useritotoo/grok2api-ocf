@@ -224,14 +224,14 @@
 .reference-card-list {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: 6px;
 }
 
 .reference-card {
   position: relative;
   width: 72px;
   height: 72px;
-  border-radius: 16px;
+  border-radius: 8px;
   overflow: hidden;
   border: 1px solid rgba(15, 23, 42, 0.12);
   background: #f5f6f8;

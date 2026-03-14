@@ -40,6 +40,7 @@ export interface OpenAIChatRequestBody {
 }
 
 export const CONVERSATION_API = "https://grok.com/rest/app-chat/conversations/new";
+const GROK_ASSET_ORIGIN = "https://assets.grok.com";
 
 function extractFileValue(item: OpenAIChatContentPart): string {
   if (!item) return "";
@@ -56,6 +57,50 @@ function isLikelyImageAttachment(value: string): boolean {
   if (candidate.startsWith("data:image/")) return true;
   if (candidate.startsWith("/images/") || candidate.startsWith("/v1/files/image/")) return true;
   return /\.(png|jpe?g|gif|webp|bmp|svg)(?:[?#].*)?$/.test(candidate);
+}
+
+function normalizeAssetUrl(raw: string): string {
+  const value = String(raw ?? "").trim();
+  if (!value) return "";
+  if (value.startsWith("http://") || value.startsWith("https://")) return value;
+  return `${GROK_ASSET_ORIGIN}/${value.replace(/^\/+/, "")}`;
+}
+
+export function prepareVideoReferencePrompt(
+  prompt: string,
+  imgIds: string[],
+  imgUris: string[],
+): { promptText: string; imageReferences: string[]; hasReferenceImages: boolean } {
+  const referenceIds = imgIds.map((item) => String(item ?? "").trim()).filter(Boolean);
+  const imageReferences = imgUris.map((item) => normalizeAssetUrl(item)).filter(Boolean);
+  if (!referenceIds.length || !imageReferences.length) {
+    return {
+      promptText: String(prompt ?? "").trim(),
+      imageReferences: [],
+      hasReferenceImages: false,
+    };
+  }
+
+  let promptText = String(prompt ?? "").trim();
+  const referenceTokens = referenceIds.map((item) => `@${item}`);
+  referenceTokens.forEach((tokenText, index) => {
+    const label = `Image ${index + 1}`;
+    const aliases = [`@${label}`, `@${label.replace(/\s+/g, "")}`];
+    aliases.forEach((alias) => {
+      if (!alias || !promptText.includes(alias)) return;
+      promptText = promptText.split(alias).join(tokenText);
+    });
+  });
+
+  if (!referenceTokens.some((tokenText) => promptText.includes(tokenText))) {
+    promptText = `${referenceTokens.join(" ")} ${promptText}`.trim();
+  }
+
+  return {
+    promptText,
+    imageReferences,
+    hasReferenceImages: true,
+  };
 }
 
 export function extractContent(messages: OpenAIChatMessage[]): {
@@ -171,7 +216,12 @@ export function buildConversationPayload(args: {
     else if (preset === "normal") modeFlag = "--mode=normal";
     else if (preset === "spicy") modeFlag = "--mode=extremely-spicy-or-crazy";
 
-    const promptText = String(content || "").trim();
+    const rawPromptText = String(content || "").trim();
+    const { promptText, imageReferences, hasReferenceImages } = prepareVideoReferencePrompt(
+      rawPromptText,
+      imgIds,
+      imgUris,
+    );
     const resolvedMode = modeFlag.replace("--mode=", "");
     const prompt = `${promptText} ${modeFlag}`.trim();
     const fileAttachments = [...fileIds, ...imgIds];
@@ -185,6 +235,10 @@ export function buildConversationPayload(args: {
       videoLength,
       resolutionName,
     };
+    if (!isVideoExtension && hasReferenceImages) {
+      videoGenModelConfig.isReferenceToVideo = true;
+      videoGenModelConfig.imageReferences = imageReferences;
+    }
     if (isVideoExtension) {
       videoGenModelConfig.isVideoExtension = true;
       videoGenModelConfig.videoExtensionStartTime = videoExtensionStartTime ?? 0;
@@ -194,8 +248,8 @@ export function buildConversationPayload(args: {
       videoGenModelConfig.originalRefType = "ORIGINAL_REF_TYPE_VIDEO_EXTENSION";
       videoGenModelConfig.mode = resolvedMode;
       videoGenModelConfig.isVideoEdit = false;
-      if (promptText) {
-        videoGenModelConfig.originalPrompt = promptText;
+      if (rawPromptText) {
+        videoGenModelConfig.originalPrompt = rawPromptText;
       }
     }
 
