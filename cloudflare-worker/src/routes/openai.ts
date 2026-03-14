@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import type { Env } from "../env";
 import { requireApiAuth, requireModelAuth } from "../auth";
+import { getCurrentConfig } from "../currentConfig";
 import { getSettings, normalizeCfCookie } from "../settings";
 import { isValidModel, MODEL_CONFIG } from "../grok/models";
 import { extractContent, buildConversationPayload, sendConversationRequest } from "../grok/conversation";
@@ -9,6 +10,7 @@ import { uploadAttachment, uploadImage } from "../grok/upload";
 import { getDynamicHeaders } from "../grok/headers";
 import { createMediaPost, createPost } from "../grok/create";
 import { createOpenAiStreamFromGrokNdjson, parseOpenAiFromGrokNdjson } from "../grok/processor";
+import { buildVideoGenerationPlan, upscaleVideoUrl } from "../grok/video";
 import {
   IMAGE_METHOD_IMAGINE_WS_EXPERIMENTAL,
   ImagineWsError,
@@ -1248,6 +1250,9 @@ openAiRoutes.post("/chat/completions", async (c) => {
 
     const settingsBundle = await getSettings(c.env);
     const cfg = MODEL_CONFIG[requestedModel]!;
+    const isVideoModel = Boolean(cfg.is_video_model);
+    const current = isVideoModel ? await getCurrentConfig(c.env) : null;
+    const requestedVideoConfig = isVideoModel ? body.video_config : undefined;
 
     const retryCodes = Array.isArray(settingsBundle.grok.retry_status_codes)
       ? settingsBundle.grok.retry_status_codes
@@ -1273,7 +1278,7 @@ openAiRoutes.post("/chat/completions", async (c) => {
     if (!quota.ok) return quota.resp;
 
     for (let attempt = 0; attempt < maxRetry; attempt++) {
-      const chosen = await selectBestToken(c.env.DB, requestedModel);
+      const chosen = await selectBestToken(c.env.DB, requestedModel, requestedVideoConfig);
       if (!chosen) return c.json(openAiError("No available token", "NO_AVAILABLE_TOKEN"), 503);
 
       const jwt = chosen.token;
@@ -1281,7 +1286,13 @@ openAiRoutes.post("/chat/completions", async (c) => {
       const cookie = cf ? `sso-rw=${jwt};sso=${jwt};${cf}` : `sso-rw=${jwt};sso=${jwt}`;
 
       const { content, attachments } = extractContent(body.messages as any);
-      const isVideoModel = Boolean(cfg.is_video_model);
+      const videoPlan = isVideoModel
+        ? buildVideoGenerationPlan({
+            videoConfig: requestedVideoConfig,
+            tokenType: chosen.token_type,
+            upscaleTiming: current?.video?.upscale_timing,
+          })
+        : null;
 
       try {
         const uploads = await mapLimit(attachments, 5, async (attachment) => ({
@@ -1396,6 +1407,14 @@ openAiRoutes.post("/chat/completions", async (c) => {
           }
         }
 
+        const workerVideoConfig =
+          isVideoModel && videoPlan
+            ? {
+                ...(requestedVideoConfig ?? {}),
+                resolution: videoPlan.generationResolution,
+                resolution_name: videoPlan.generationResolutionName,
+              }
+            : undefined;
         const { payload, referer } = buildConversationPayload({
           requestModel: requestedModel,
           content,
@@ -1403,7 +1422,7 @@ openAiRoutes.post("/chat/completions", async (c) => {
           imgIds,
           imgUris,
           ...(postId ? { postId } : {}),
-          ...(isVideoModel && body.video_config ? { videoConfig: body.video_config } : {}),
+          ...(workerVideoConfig ? { videoConfig: workerVideoConfig } : {}),
           settings: settingsBundle.grok,
         });
 
@@ -1423,6 +1442,20 @@ openAiRoutes.post("/chat/completions", async (c) => {
           break;
         }
 
+        const transformVideoAsset =
+          isVideoModel && videoPlan?.shouldUpscale
+            ? async (asset: { videoUrl: string; thumbnailUrl?: string }) => {
+                const { videoUrl } = await upscaleVideoUrl({
+                  videoUrl: asset.videoUrl,
+                  cookie,
+                  settings: settingsBundle.grok,
+                });
+                return {
+                  videoUrl,
+                  ...(asset.thumbnailUrl ? { thumbnailUrl: asset.thumbnailUrl } : {}),
+                };
+              }
+            : undefined;
         if (stream) {
           const sse = createOpenAiStreamFromGrokNdjson(upstream, {
             cookie,
@@ -1430,6 +1463,12 @@ openAiRoutes.post("/chat/completions", async (c) => {
             global: settingsBundle.global,
             origin,
             requestedModel,
+            ...(videoPlan?.shouldUpscale
+              ? {
+                  videoMode: videoPlan.upscaleTiming === "complete" ? "finalize" : "eager",
+                  transformVideoAsset,
+                }
+              : {}),
             onFinish: async ({ status, duration }) => {
               await addRequestLog(c.env.DB, {
                 ip,
@@ -1461,6 +1500,7 @@ openAiRoutes.post("/chat/completions", async (c) => {
           global: settingsBundle.global,
           origin,
           requestedModel,
+          ...(transformVideoAsset ? { transformVideoAsset } : {}),
         });
 
         const duration = (Date.now() - start) / 1000;

@@ -184,6 +184,7 @@ export function buildConversationPayload(args: {
       aspectRatio,
       videoLength,
       videoResolution: resolution,
+      resolutionName,
     };
     if (isVideoExtension) {
       videoGenModelConfig.isVideoExtension = true;
@@ -193,7 +194,6 @@ export function buildConversationPayload(args: {
       videoGenModelConfig.originalPostId = originalPostId ?? extendPostId ?? postId;
       videoGenModelConfig.originalRefType = "ORIGINAL_REF_TYPE_VIDEO_EXTENSION";
       videoGenModelConfig.mode = resolvedMode;
-      videoGenModelConfig.resolutionName = resolutionName;
       videoGenModelConfig.isVideoEdit = false;
       if (promptText) {
         videoGenModelConfig.originalPrompt = promptText;

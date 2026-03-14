@@ -3,6 +3,36 @@ import test from "node:test";
 
 import { buildConversationPayload } from "../src/grok/conversation";
 
+test("buildConversationPayload keeps resolutionName for initial 720p video generation", () => {
+  const { payload, referer, isVideoModel } = buildConversationPayload({
+    requestModel: "grok-imagine-1.0-video",
+    content: "Create a cinematic tracking shot",
+    fileIds: [],
+    imgIds: [],
+    imgUris: [],
+    postId: "abcd1234abcd1234abcd1234abcd1234",
+    videoConfig: {
+      aspect_ratio: "16:9",
+      video_length: 6,
+      resolution: "HD",
+      resolution_name: "720p",
+      preset: "normal",
+      is_video_extension: false,
+    },
+    settings: {} as any,
+  });
+
+  assert.equal(isVideoModel, true);
+  assert.equal(referer, "https://grok.com/imagine");
+  assert.deepEqual((payload as any).responseMetadata.modelConfigOverride.modelMap.videoGenModelConfig, {
+    parentPostId: "abcd1234abcd1234abcd1234abcd1234",
+    aspectRatio: "16:9",
+    videoLength: 6,
+    videoResolution: "HD",
+    resolutionName: "720p",
+  });
+});
+
 test("buildConversationPayload maps video extension config to Grok videoGenModelConfig", () => {
   const { payload, referer, isVideoModel } = buildConversationPayload({
     requestModel: "grok-imagine-1.0-video",

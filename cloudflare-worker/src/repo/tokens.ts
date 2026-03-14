@@ -1,6 +1,7 @@
 import type { Env } from "../env";
 import { dbAll, dbFirst, dbRun } from "../db";
 import { nowMs } from "../utils/time";
+import { requiresSuperVideoToken, type VideoConfigInput } from "../grok/video";
 
 export type TokenType = "sso" | "ssoSuper";
 
@@ -174,10 +175,16 @@ export async function getAllTags(db: Env["DB"]): Promise<string[]> {
   return [...set].sort();
 }
 
-export async function selectBestToken(db: Env["DB"], model: string): Promise<{ token: string; token_type: TokenType } | null> {
+export async function selectBestToken(
+  db: Env["DB"],
+  model: string,
+  options?: VideoConfigInput,
+): Promise<{ token: string; token_type: TokenType } | null> {
   const now = nowMs();
   const isHeavy = model === "grok-4-heavy";
+  const isVideo = model === "grok-imagine-1.0-video";
   const field = isHeavy ? "heavy_remaining_queries" : "remaining_queries";
+  const preferSuperVideo = isVideo && requiresSuperVideoToken(options);
 
   const pick = async (token_type: TokenType): Promise<{ token: string; token_type: TokenType } | null> => {
     const row = await dbFirst<{ token: string }>(
@@ -196,6 +203,9 @@ export async function selectBestToken(db: Env["DB"], model: string): Promise<{ t
   };
 
   if (isHeavy) return pick("ssoSuper");
+  if (preferSuperVideo) {
+    return (await pick("ssoSuper")) ?? (await pick("sso"));
+  }
 
   return (await pick("sso")) ?? (await pick("ssoSuper"));
 }

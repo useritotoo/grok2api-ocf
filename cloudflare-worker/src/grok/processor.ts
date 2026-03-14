@@ -74,6 +74,45 @@ function buildVideoHtml(args: { videoUrl: string; posterUrl?: string; posterPrev
   return buildVideoTag(args.videoUrl);
 }
 
+type VideoAssetPayload = {
+  videoUrl: string;
+  thumbnailUrl?: string;
+};
+
+type VideoAssetRender = {
+  videoUrl: string;
+  posterUrl?: string;
+};
+
+type VideoAssetTransformer = (
+  asset: VideoAssetPayload,
+) => Promise<VideoAssetPayload | null | undefined> | VideoAssetPayload | null | undefined;
+
+async function resolveVideoRender(args: {
+  global: GlobalSettings;
+  origin: string;
+  asset: VideoAssetPayload;
+  transformVideoAsset?: VideoAssetTransformer;
+}): Promise<VideoAssetRender | null> {
+  const transformed = args.transformVideoAsset ? await args.transformVideoAsset(args.asset) : args.asset;
+  const resolvedAsset = transformed ?? args.asset;
+  const videoUrl = String(resolvedAsset.videoUrl ?? "").trim();
+  if (!videoUrl) return null;
+
+  const videoPath = encodeAssetPath(videoUrl);
+  const render: VideoAssetRender = {
+    videoUrl: toImgProxyUrl(args.global, args.origin, videoPath),
+  };
+
+  const thumbnailUrl = String(resolvedAsset.thumbnailUrl ?? "").trim();
+  if (thumbnailUrl) {
+    const thumbPath = encodeAssetPath(thumbnailUrl);
+    render.posterUrl = toImgProxyUrl(args.global, args.origin, thumbPath);
+  }
+
+  return render;
+}
+
 function base64UrlEncode(input: string): string {
   const bytes = new TextEncoder().encode(input);
   let binary = "";
@@ -255,6 +294,8 @@ export function createOpenAiStreamFromGrokNdjson(
     global: GlobalSettings;
     origin: string;
     requestedModel: string;
+    videoMode?: "eager" | "finalize";
+    transformVideoAsset?: VideoAssetTransformer;
     onFinish?: (result: { status: number; duration: number }) => Promise<void> | void;
   },
 ): ReadableStream<Uint8Array> {
@@ -263,6 +304,7 @@ export function createOpenAiStreamFromGrokNdjson(
     typeof opts.requestedModel === "string" && opts.requestedModel.trim()
       ? opts.requestedModel.trim()
       : "grok-4";
+  const videoMode = opts.videoMode ?? "eager";
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();
 
@@ -302,6 +344,8 @@ export function createOpenAiStreamFromGrokNdjson(
       let streamedAnswerText = "";
       let videoProgressStarted = false;
       let lastVideoProgress = -1;
+      let pendingVideoAsset: VideoAssetPayload | null = null;
+      let finalVideoEmitted = false;
 
       let buffer = "";
 
@@ -312,7 +356,40 @@ export function createOpenAiStreamFromGrokNdjson(
         return showThinking ? "\n</think>\n" : "";
       };
 
-      const flushStop = () => {
+      const emitVideoAsset = async (asset: VideoAssetPayload) => {
+        const render = await resolveVideoRender({
+          global,
+          origin,
+          asset,
+          transformVideoAsset: opts.transformVideoAsset,
+        });
+        if (!render) return;
+        finalVideoEmitted = true;
+        controller.enqueue(
+          encoder.encode(
+            makeChunk(
+              id,
+              created,
+              currentModel,
+              buildVideoHtml({
+                videoUrl: render.videoUrl,
+                posterPreview: settings.video_poster_preview === true,
+                ...(render.posterUrl ? { posterUrl: render.posterUrl } : {}),
+              }),
+            ),
+          ),
+        );
+      };
+
+      const flushPendingVideoAsset = async () => {
+        if (!pendingVideoAsset || finalVideoEmitted) return;
+        const asset = pendingVideoAsset;
+        pendingVideoAsset = null;
+        await emitVideoAsset(asset);
+      };
+
+      const flushStop = async () => {
+        await flushPendingVideoAsset();
         const closing = closeThinkingPrefix();
         if (closing) {
           controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, closing)));
@@ -327,20 +404,20 @@ export function createOpenAiStreamFromGrokNdjson(
           const now = Date.now();
           const elapsed = now - startTime;
           if (!firstReceived && elapsed > firstTimeoutMs) {
-            flushStop();
+            await flushStop();
             if (opts.onFinish) await opts.onFinish({ status: finalStatus, duration: (Date.now() - startTime) / 1000 });
             controller.close();
             return;
           }
           if (totalTimeoutMs > 0 && elapsed > totalTimeoutMs) {
-            flushStop();
+            await flushStop();
             if (opts.onFinish) await opts.onFinish({ status: finalStatus, duration: (Date.now() - startTime) / 1000 });
             controller.close();
             return;
           }
           const idle = now - lastChunkTime;
           if (firstReceived && idle > chunkTimeoutMs) {
-            flushStop();
+            await flushStop();
             if (opts.onFinish) await opts.onFinish({ status: finalStatus, duration: (Date.now() - startTime) / 1000 });
             controller.close();
             return;
@@ -353,7 +430,7 @@ export function createOpenAiStreamFromGrokNdjson(
 
           const res = await readWithTimeout(reader, perReadTimeout);
           if ("timeout" in res) {
-            flushStop();
+            await flushStop();
             if (opts.onFinish) await opts.onFinish({ status: finalStatus, duration: (Date.now() - startTime) / 1000 });
             controller.close();
             return;
@@ -426,29 +503,15 @@ export function createOpenAiStreamFromGrokNdjson(
               }
 
               if (videoUrl) {
-                const videoPath = encodeAssetPath(videoUrl);
-                const src = toImgProxyUrl(global, origin, videoPath);
-
-                let poster: string | undefined;
-                if (thumbUrl) {
-                  const thumbPath = encodeAssetPath(thumbUrl);
-                  poster = toImgProxyUrl(global, origin, thumbPath);
+                const asset: VideoAssetPayload = {
+                  videoUrl,
+                  ...(thumbUrl ? { thumbnailUrl: thumbUrl } : {}),
+                };
+                if (videoMode === "finalize") {
+                  pendingVideoAsset = asset;
+                } else {
+                  await emitVideoAsset(asset);
                 }
-
-                controller.enqueue(
-                  encoder.encode(
-                    makeChunk(
-                      id,
-                      created,
-                      currentModel,
-                      buildVideoHtml({
-                        videoUrl: src,
-                        posterPreview: settings.video_poster_preview === true,
-                        ...(poster ? { posterUrl: poster } : {}),
-                      }),
-                    ),
-                  ),
-                );
               }
               continue;
             }
@@ -561,8 +624,7 @@ export function createOpenAiStreamFromGrokNdjson(
           }
         }
 
-        controller.enqueue(encoder.encode(makeChunk(id, created, currentModel, "", "stop")));
-        controller.enqueue(encoder.encode(makeDone()));
+        await flushStop();
         if (opts.onFinish) await opts.onFinish({ status: finalStatus, duration: (Date.now() - startTime) / 1000 });
         controller.close();
       } catch (e) {
@@ -588,7 +650,14 @@ export function createOpenAiStreamFromGrokNdjson(
 
 export async function parseOpenAiFromGrokNdjson(
   grokResp: Response,
-  opts: { cookie: string; settings: GrokSettings; global: GlobalSettings; origin: string; requestedModel: string },
+  opts: {
+    cookie: string;
+    settings: GrokSettings;
+    global: GlobalSettings;
+    origin: string;
+    requestedModel: string;
+    transformVideoAsset?: VideoAssetTransformer;
+  },
 ): Promise<Record<string, unknown>> {
   const { global, origin, requestedModel, settings } = opts;
 
@@ -603,19 +672,22 @@ export async function parseOpenAiFromGrokNdjson(
 
     const videoResp = grok.streamingVideoGenerationResponse;
     if (videoResp?.videoUrl && typeof videoResp.videoUrl === "string") {
-      const videoPath = encodeAssetPath(videoResp.videoUrl);
-      const src = toImgProxyUrl(global, origin, videoPath);
-
-      let poster: string | undefined;
-      if (typeof videoResp.thumbnailImageUrl === "string" && videoResp.thumbnailImageUrl) {
-        const thumbPath = encodeAssetPath(videoResp.thumbnailImageUrl);
-        poster = toImgProxyUrl(global, origin, thumbPath);
-      }
-
+      const render = await resolveVideoRender({
+        global,
+        origin,
+        asset: {
+          videoUrl: videoResp.videoUrl,
+          ...(typeof videoResp.thumbnailImageUrl === "string" && videoResp.thumbnailImageUrl
+            ? { thumbnailUrl: videoResp.thumbnailImageUrl }
+            : {}),
+        },
+        transformVideoAsset: opts.transformVideoAsset,
+      });
+      if (!render) return false;
       content = buildVideoHtml({
-        videoUrl: src,
+        videoUrl: render.videoUrl,
         posterPreview: settings.video_poster_preview === true,
-        ...(poster ? { posterUrl: poster } : {}),
+        ...(render.posterUrl ? { posterUrl: render.posterUrl } : {}),
       });
       model = requestedModel;
       return true;
