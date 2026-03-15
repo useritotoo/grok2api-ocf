@@ -31,7 +31,7 @@
       }
       .prompt-enhance-actions {
         position: absolute;
-        right: 10px;
+        right: 16px;
         bottom: 10px;
         z-index: 5;
         display: inline-flex;
@@ -186,8 +186,22 @@
     return restored;
   }
 
+  function sanitizeEnhancedPromptText(text) {
+    const raw = String(text || "");
+    if (!raw) return "";
+    return raw
+      .replace(/<\s*br\s*\/?>/gi, "\n")
+      .replace(/<\s*\/\s*(?:p|div|pre|li|blockquote|h[1-6]|ul|ol)\s*>/gi, "\n")
+      .replace(/<\s*li\b[^>]*>/gi, "- ")
+      .replace(/<\s*(?:p|div|pre|code|span|strong|em|b|i|u|blockquote|ul|ol|h[1-6])\b[^>]*>/gi, "")
+      .replace(/<\/?\s*code\s*>/gi, "")
+      .replace(/\u00a0/g, " ")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+  }
+
   function parseEnhancedPrompt(text) {
-    const raw = String(text || "").trim();
+    const raw = sanitizeEnhancedPromptText(text);
     if (!raw) {
       return { en: "", zh: "", tail: "", raw: "" };
     }
@@ -383,13 +397,15 @@
     setEnhanceRunning(textarea, button, toggleButton, actionWrap, true);
 
     try {
-      const enhanced = await callEnhanceApi(mentionState.text, controller.signal, authHeader, requestId);
+      const enhanced = sanitizeEnhancedPromptText(
+        await callEnhanceApi(mentionState.text, controller.signal, authHeader, requestId),
+      );
       const parsed = parseEnhancedPrompt(enhanced);
       const restored = {
-        en: restorePromptMentions(parsed.en, mentionState),
-        zh: restorePromptMentions(parsed.zh, mentionState),
-        tail: restorePromptMentions(parsed.tail, mentionState),
-        raw: restorePromptMentions(parsed.raw, mentionState),
+        en: sanitizeEnhancedPromptText(restorePromptMentions(parsed.en, mentionState)),
+        zh: sanitizeEnhancedPromptText(restorePromptMentions(parsed.zh, mentionState)),
+        tail: sanitizeEnhancedPromptText(restorePromptMentions(parsed.tail, mentionState)),
+        raw: sanitizeEnhancedPromptText(restorePromptMentions(parsed.raw, mentionState)),
       };
       const hasDualLanguage = Boolean(restored.en && restored.zh);
       const nextState = {

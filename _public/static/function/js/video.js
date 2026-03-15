@@ -550,7 +550,7 @@
 
     const body = document.createElement('div');
     body.className = 'video-item-body';
-    body.innerHTML = '<div class="video-item-placeholder">' + tSafe('video.generatingPlaceholder', '等待视频输出...') + '</div>';
+    body.innerHTML = '<div class="video-item-placeholder video-item-placeholder-loading"><span class="video-item-spinner" aria-hidden="true"></span><span class="video-item-placeholder-text">' + tSafe('video.generatingPlaceholder', '等待视频输出...') + '</span></div>';
 
     const link = document.createElement('div');
     link.className = 'video-item-link';
@@ -572,6 +572,42 @@
       initPreviewSlot(kind);
     }
     return currentPreviewItem;
+  }
+
+  function removePreviewItem(item) {
+    if (!item) return;
+    const itemIndex = String(item.dataset.index || '').trim();
+    if (currentPreviewItem === item) {
+      currentPreviewItem = null;
+    }
+    if (selectedVideoItemId && selectedVideoItemId === itemIndex) {
+      resetWorkspaceVideo();
+    }
+    if (typeof item.remove === 'function') {
+      item.remove();
+    } else if (item.parentNode && typeof item.parentNode.removeChild === 'function') {
+      item.parentNode.removeChild(item);
+    }
+    if (videoStage && !videoStage.querySelector('.video-item')) {
+      videoStage.classList.add('hidden');
+      if (videoEmpty) {
+        videoEmpty.classList.remove('hidden');
+      }
+      previewCount = 0;
+      generatedCount = 0;
+      extendedCount = 0;
+    }
+    updateHistoryCount();
+    refreshVideoSelectionUi();
+  }
+
+  function discardCurrentPreviewItemIfEmpty() {
+    if (!currentPreviewItem) return false;
+    if (String(currentPreviewItem.dataset.url || '').trim()) {
+      return false;
+    }
+    removePreviewItem(currentPreviewItem);
+    return true;
   }
 
   function updateItemLinks(item, url, options) {
@@ -614,6 +650,7 @@
     }
     if (safeUrl) {
       item.classList.remove('is-pending');
+      item.classList.remove('is-failed');
     }
   }
 
@@ -1169,6 +1206,32 @@
     syncPromptTextareaFromRichInput();
   }
 
+  function hasUnsupportedPromptRichNodes() {
+    if (!promptRichInput) return false;
+    return Array.from(promptRichInput.childNodes).some((node) => {
+      return node.nodeType === DOM_ELEMENT_NODE
+        && !(node.classList && node.classList.contains('prompt-mention-chip'));
+    });
+  }
+
+  function insertPlainTextIntoPrompt(text) {
+    if (!promptRichInput) return;
+    const selection = window.getSelection();
+    if (!selection || !selection.rangeCount) {
+      promptRichInput.appendChild(document.createTextNode(String(text || '')));
+      return;
+    }
+    const range = selection.getRangeAt(0);
+    if (!promptRichInput.contains(range.startContainer)) {
+      promptRichInput.appendChild(document.createTextNode(String(text || '')));
+      return;
+    }
+    range.deleteContents();
+    const textNode = document.createTextNode(String(text || ''));
+    range.insertNode(textNode);
+    setCaretAfterNode(textNode);
+  }
+
   function insertMentionLabel(candidate) {
     if (!promptRichInput || !candidate) return;
     const selection = window.getSelection();
@@ -1339,7 +1402,20 @@
     promptInput.dataset.richPromptMounted = '1';
 
     promptRichInput.addEventListener('input', () => {
-      syncPromptTextareaFromRichInput();
+      if (hasUnsupportedPromptRichNodes()) {
+        normalizePromptRichInputTokens(false);
+      } else {
+        syncPromptTextareaFromRichInput();
+      }
+      renderReferenceMentionMenu();
+    });
+    promptRichInput.addEventListener('paste', (event) => {
+      const clipboard = event && event.clipboardData;
+      if (!clipboard || typeof clipboard.getData !== 'function') return;
+      const pastedText = clipboard.getData('text/plain') || clipboard.getData('text') || '';
+      event.preventDefault();
+      insertPlainTextIntoPrompt(pastedText);
+      normalizePromptRichInputTokens(false);
       renderReferenceMentionMenu();
     });
     promptRichInput.addEventListener('click', (event) => {
@@ -2288,6 +2364,7 @@
     try {
       taskId = await createVideoTask(authHeader, payload);
     } catch (e) {
+      discardCurrentPreviewItemIfEmpty();
       setStatus('error', tSafe('common.createTaskFailed', 'Failed to create task.'));
       isRunning = false;
       syncStartButtonAvailability();
@@ -2315,7 +2392,12 @@
     es.onmessage = (event) => {
       if (!event || !event.data) return;
       if (event.data === '[DONE]') {
-        finishRun();
+        if (getCurrentPreviewUrl()) {
+          finishRun();
+        } else {
+          setStatus('error', tSafe('common.generationFailed', 'Generation failed.'));
+          finishRun(true);
+        }
         return;
       }
       let payloadObject = null;
@@ -2336,6 +2418,9 @@
         handleDelta(delta.content);
       }
       if (choice && choice.finish_reason === 'stop') {
+        if (!getCurrentPreviewUrl()) {
+          return;
+        }
         finishRun();
       }
     };
@@ -2389,6 +2474,7 @@
     try {
       taskId = await createVideoTask(authHeader, payload);
     } catch (e) {
+      discardCurrentPreviewItemIfEmpty();
       setStatus('error', tSafe('common.createTaskFailed', 'Failed to create task.'));
       isRunning = false;
       syncStartButtonAvailability();
@@ -2467,6 +2553,7 @@
     closeSource();
     isRunning = false;
     currentTaskId = '';
+    discardCurrentPreviewItemIfEmpty();
     stopElapsedTimer();
     setButtons(false);
     setSpliceButtonState('idle');
@@ -2478,16 +2565,29 @@
     if (!isRunning) return;
     closeSource();
     isRunning = false;
+    const hasPreviewUrl = Boolean(getCurrentPreviewUrl());
+    const failed = Boolean(hasError) || !hasPreviewUrl;
     setButtons(false);
     setSpliceButtonState('idle');
     syncTimelineAvailability();
     stopElapsedTimer();
-    if (!hasError) {
+    if (!failed) {
       setStatus('connected', currentRunKind === 'splice' ? '延长完成' : tSafe('common.done', '已完成'));
       setIndeterminate(false);
       updateProgress(100);
-    } else if (currentRunKind === 'splice') {
+    } else {
       setStatus('error', '延长失败');
+    }
+    if (failed) {
+      const removedEmptyPreview = discardCurrentPreviewItemIfEmpty();
+      if (currentRunKind !== 'splice') {
+        setStatus('error', tSafe('common.generationFailed', 'Generation failed.'));
+      }
+      if (!removedEmptyPreview && currentPreviewItem) {
+        currentPreviewItem.classList.remove('is-pending');
+        currentPreviewItem.classList.add('is-failed');
+      }
+      setIndeterminate(false);
     }
     if (durationValue && startAt) {
       const seconds = Math.max(0, Math.round((Date.now() - startAt) / 1000));

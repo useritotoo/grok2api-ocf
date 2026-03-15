@@ -93,7 +93,7 @@
                     <div class="toggle-desc" data-i18n="imagine.autoFilterDesc">过滤不达标图片</div>
                   </div>
                   <label class="toggle">
-                    <input id="autoFilterToggle" type="checkbox">
+                    <input id="autoFilterToggle" type="checkbox" checked>
                     <span class="toggle-track"></span>
                   </label>
                 </div>
@@ -107,30 +107,26 @@
                     <span class="toggle-track"></span>
                   </label>
                 </div>
-              </div>
-              <div class="settings-block settings-block-row2">
-                <div class="settings-row">
-                  <div class="settings-field">
-                    <label class="field-label" for="ratioSelect" data-i18n="imagine.aspectRatio">宽高比</label>
-                    <select id="ratioSelect" class="geist-input">
-                      <option value="2:3" selected data-i18n="imagine.ratio2_3">2:3 竖图</option>
-                      <option value="1:1" data-i18n="imagine.ratio1_1">1:1 方图</option>
-                      <option value="3:2" data-i18n="imagine.ratio3_2">3:2 横图</option>
-                      <option value="16:9" data-i18n="imagine.ratio16_9">16:9 宽屏</option>
-                      <option value="9:16" data-i18n="imagine.ratio9_16">9:16 竖屏</option>
-                    </select>
-                  </div>
-                  <div class="settings-field">
-                    <label class="field-label" for="nSelect" data-i18n="imagine.imageCount">生成数量</label>
-                    <select id="nSelect" class="geist-input">
-                      <option value="1" data-i18n="imagine.nCount1">1 张</option>
-                      <option value="2" data-i18n="imagine.nCount2">2 张</option>
-                      <option value="3" data-i18n="imagine.nCount3">3 张</option>
-                      <option value="4" selected data-i18n="imagine.nCount4">4 张</option>
-                      <option value="5" data-i18n="imagine.nCount5">5 张</option>
-                      <option value="6" data-i18n="imagine.nCount6">6 张</option>
-                    </select>
-                  </div>
+                <div class="toggle-row">
+                  <label class="field-label" for="ratioSelect" data-i18n="imagine.aspectRatio">宽高比</label>
+                  <select id="ratioSelect" class="geist-input">
+                    <option value="2:3" selected data-i18n="imagine.ratio2_3">2:3 竖图</option>
+                    <option value="1:1" data-i18n="imagine.ratio1_1">1:1 方图</option>
+                    <option value="3:2" data-i18n="imagine.ratio3_2">3:2 横图</option>
+                    <option value="16:9" data-i18n="imagine.ratio16_9">16:9 宽屏</option>
+                    <option value="9:16" data-i18n="imagine.ratio9_16">9:16 竖屏</option>
+                  </select>
+                </div>
+                <div class="toggle-row">
+                  <label class="field-label" for="nSelect" data-i18n="imagine.imageCount">生成数量</label>
+                  <select id="nSelect" class="geist-input">
+                    <option value="1" data-i18n="imagine.nCount1">1 张</option>
+                    <option value="2" data-i18n="imagine.nCount2">2 张</option>
+                    <option value="3" data-i18n="imagine.nCount3">3 张</option>
+                    <option value="4" data-i18n="imagine.nCount4">4 张</option>
+                    <option value="5" data-i18n="imagine.nCount5">5 张</option>
+                    <option value="6" selected data-i18n="imagine.nCount6">6 张</option>
+                  </select>
                 </div>
               </div>
               <div class="settings-block settings-block-reference legacy-reference-block">

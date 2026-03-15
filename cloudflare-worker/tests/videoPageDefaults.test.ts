@@ -36,7 +36,22 @@ test("video page keeps the @Image mention menu compact and allows it to flip abo
   const css = readFileSync(videoCssPath, "utf8");
 
   assert.match(css, /\.video-prompt-wrap\s*\{[\s\S]*overflow:\s*visible;/);
-  assert.match(css, /\.reference-mention-menu\s*\{[\s\S]*min-width:\s*188px;[\s\S]*max-width:\s*min\(248px, calc\(100vw - 24px\)\);/);
+  assert.match(css, /\.reference-mention-menu\s*\{[\s\S]*min-width:\s*120px;[\s\S]*max-width:\s*min\(248px, calc\(100vw - 24px\)\);/);
   assert.match(css, /\.reference-mention-menu\.is-above\s*\{/);
   assert.match(js, /referenceMentionMenu\.classList\.toggle\('is-above',\s*shouldPlaceAbove\);/);
+});
+
+test("video page styles a pending history card with a loading indicator", () => {
+  const css = readFileSync(videoCssPath, "utf8");
+
+  assert.match(css, /\.video-item-spinner\s*\{/);
+  assert.match(css, /\.video-item-spinner\s*\{[\s\S]*animation:\s*video-item-spinner-spin 0\.9s linear infinite;/);
+  assert.match(css, /@keyframes video-item-spinner-spin\s*\{/);
+});
+
+test("video page keeps rich prompt input limited to plain text plus @Image chips", () => {
+  const js = readFileSync(videoJsPath, "utf8");
+
+  assert.match(js, /promptRichInput\.addEventListener\('paste',/);
+  assert.match(js, /normalizePromptRichInputTokens\(false\);/);
 });

@@ -659,6 +659,41 @@ test("video generation request payload keeps the selected aspect ratio and prese
   }
 });
 
+test("video generation inserts a pending history item with a loading indicator immediately", async () => {
+  const { hooks, document, eventSources } = loadVideoHooks();
+  const promptInput = document.getElementById("promptInput");
+  const videoStage = document.getElementById("videoStage");
+
+  if (promptInput) promptInput.value = "Animate the fountain at dusk";
+
+  await hooks.startConnection();
+
+  try {
+    assert.equal(videoStage?.children.length, 1);
+    const pendingItem = videoStage?.children[0];
+    const body = pendingItem?.querySelector(".video-item-body");
+    assert.ok(pendingItem?.classList.contains("is-pending"));
+    assert.match(String(body?.innerHTML || ""), /video-item-spinner/);
+  } finally {
+    eventSources[0]?.emitMessage("[DONE]");
+  }
+});
+
+test("failed video generation removes an empty pending history item", async () => {
+  const { hooks, document, eventSources } = loadVideoHooks();
+  const promptInput = document.getElementById("promptInput");
+  const videoStage = document.getElementById("videoStage");
+
+  if (promptInput) promptInput.value = "Animate the fountain at dusk";
+
+  await hooks.startConnection();
+
+  assert.equal(videoStage?.children.length, 1);
+  eventSources[0]?.emitMessage(JSON.stringify({ error: "generation_failed" }));
+
+  assert.equal(videoStage?.children.length, 0);
+});
+
 test("video extension keeps the selected preset even when prompt is empty", async () => {
   const { hooks, fetchCalls, eventSources, document } = loadVideoHooks();
   const presetSelect = document.getElementById("presetSelect");

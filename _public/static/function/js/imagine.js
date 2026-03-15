@@ -1375,7 +1375,7 @@
     }
     const rawPublicKey = normalizeAuthHeader(authHeader);
 
-    const n = nSelect ? (parseInt(nSelect.value, 10) || 4) : 4;
+    const n = nSelect ? (parseInt(nSelect.value, 10) || 6) : 6;
     const requestedConcurrent = getRequestedConcurrent();
     const ratio = ratioSelect ? ratioSelect.value : '2:3';
     const nsfwEnabled = nsfwSelect ? nsfwSelect.value === 'true' : true;
@@ -1526,7 +1526,7 @@
     const prompt = promptOverride || (promptInput ? promptInput.value.trim() : '');
     const ratio = ratioSelect ? ratioSelect.value : '2:3';
     const nsfwEnabled = nsfwSelect ? nsfwSelect.value === 'true' : true;
-    const nVal = state && state.imageCount ? state.imageCount : (nSelect ? (parseInt(nSelect.value, 10) || 4) : 4);
+    const nVal = state && state.imageCount ? state.imageCount : (nSelect ? (parseInt(nSelect.value, 10) || 6) : 6);
     const infiniteModeEnabled = infiniteModeToggle ? infiniteModeToggle.checked : false;
     const payload = {
       type: 'start',

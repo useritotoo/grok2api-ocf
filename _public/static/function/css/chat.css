@@ -690,12 +690,12 @@ body {
 
 .composer-input {
   display: flex;
-  align-items: center;
+  align-items: self-end;
   gap: 10px;
   background: var(--chat-surface);
   border: 1px solid var(--chat-border);
-  border-radius: 999px;
-  padding: 10px 14px;
+  border-radius: 12px;
+  padding: 10px 10px;
   box-shadow: 0 18px 32px rgba(17, 17, 17, 0.08);
 }
 
@@ -722,7 +722,7 @@ body {
 
 .composer-textarea {
   flex: 1;
-  min-height: 40px;
+  min-height: 86px;
   height: 40px;
   max-height: 160px;
   border: none;
@@ -730,7 +730,6 @@ body {
   resize: none;
   font-size: 14px;
   line-height: 1.4;
-  padding: 10px 0;
   background: transparent;
   color: var(--chat-ink);
   overflow-y: auto;
@@ -985,7 +984,7 @@ body.chat-lightbox-open {
   }
 
   .composer-input {
-    align-items: flex-start;
+    /* align-items: flex-start; */
   }
 
   .model-chip {
