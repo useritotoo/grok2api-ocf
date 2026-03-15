@@ -175,6 +175,278 @@ test("chat completions still send legacy cf_clearance to Grok upstream when curr
   assert.match(capturedCookie, /cf_clearance=legacy-clearance-token/);
 });
 
+test("getSettings keeps grok stream defaults when current chat config is still untouched default", async () => {
+  const settings = await getSettings(createEnv({}));
+
+  assert.equal(settings.grok.stream_first_response_timeout, 30);
+  assert.equal(settings.grok.stream_chunk_timeout, 120);
+  assert.equal(settings.grok.stream_total_timeout, 600);
+});
+
+test("getSettings does not mix legacy proxy cookies into a customized current proxy section", async () => {
+  const settings = await getSettings(
+    createEnv({
+      proxy: {
+        base_proxy_url: "https://current-proxy.example",
+      },
+      grok: {
+        proxy_url: "https://legacy-proxy.example",
+        cache_proxy_url: "https://legacy-assets.example",
+        cf_clearance: "legacy-stale-clearance",
+      },
+    }),
+  );
+
+  assert.equal(settings.grok.proxy_url, "https://current-proxy.example");
+  assert.equal(settings.grok.cache_proxy_url, "");
+  assert.equal(settings.grok.cf_clearance, "");
+});
+
+test("getSettings exposes current proxy cookie jar and fingerprint fields to Worker runtime", async () => {
+  const settings = await getSettings(
+    createEnv({
+      proxy: {
+        cf_cookies: "cf_bm=bm-token; cf_clearance=jar-clearance",
+        cf_clearance: "manual-clearance",
+        browser: "chrome136",
+        user_agent:
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+        enabled: true,
+      },
+    }),
+  );
+
+  assert.equal((settings.grok as any).cf_cookies, "cf_bm=bm-token; cf_clearance=jar-clearance");
+  assert.equal((settings.grok as any).browser, "chrome136");
+  assert.equal(
+    (settings.grok as any).user_agent,
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+  );
+  assert.equal((settings.grok as any).proxy_enabled, true);
+});
+
+test("chat completions omit legacy cf_clearance when the current proxy section is already customized", async () => {
+  let capturedCookie = "";
+
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url === "https://grok.com/rest/app-chat/conversations/new") {
+      const headers = new Headers(init?.headers);
+      capturedCookie = headers.get("Cookie") ?? "";
+      return new Response(
+        `${JSON.stringify({
+          result: {
+            response: {
+              modelResponse: {
+                model: "grok-4",
+                message: "current proxy cookie ok",
+              },
+            },
+          },
+        })}\n`,
+        {
+          status: 200,
+          headers: { "content-type": "application/x-ndjson" },
+        },
+      );
+    }
+    return originalFetch(input, init);
+  }) as typeof fetch;
+
+  const response = await (worker.fetch as any)(
+    new Request("https://example.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "grok-4",
+        stream: false,
+        messages: [{ role: "user", content: "hello" }],
+      }),
+    }),
+    createEnv({
+      proxy: {
+        base_proxy_url: "https://current-proxy.example",
+      },
+      grok: {
+        cf_clearance: "legacy-stale-clearance",
+      },
+    }),
+    createExecutionContext(),
+  );
+
+  assert.equal(response.status, 200);
+  assert.match(capturedCookie, /sso-rw=legacy-sso-token/);
+  assert.doesNotMatch(capturedCookie, /cf_clearance=/);
+});
+
+test("chat completions forward current cf_cookies when proxy section provides a cookie jar", async () => {
+  let capturedCookie = "";
+
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url === "https://grok.com/rest/app-chat/conversations/new") {
+      const headers = new Headers(init?.headers);
+      capturedCookie = headers.get("Cookie") ?? "";
+      return new Response(
+        `${JSON.stringify({
+          result: {
+            response: {
+              modelResponse: {
+                model: "grok-4",
+                message: "cookie jar ok",
+              },
+            },
+          },
+        })}\n`,
+        {
+          status: 200,
+          headers: { "content-type": "application/x-ndjson" },
+        },
+      );
+    }
+    return originalFetch(input, init);
+  }) as typeof fetch;
+
+  const response = await (worker.fetch as any)(
+    new Request("https://example.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "grok-4",
+        stream: false,
+        messages: [{ role: "user", content: "hello" }],
+      }),
+    }),
+    createEnv({
+      proxy: {
+        cf_cookies: "cf_bm=bm-token; cf_clearance=jar-clearance",
+      },
+    }),
+    createExecutionContext(),
+  );
+
+  assert.equal(response.status, 200);
+  assert.match(capturedCookie, /sso-rw=legacy-sso-token/);
+  assert.match(capturedCookie, /cf_bm=bm-token/);
+  assert.match(capturedCookie, /cf_clearance=jar-clearance/);
+});
+
+test("chat completions replace cf_clearance inside current cookie jar when manual cf_clearance is configured", async () => {
+  let capturedCookie = "";
+
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url === "https://grok.com/rest/app-chat/conversations/new") {
+      const headers = new Headers(init?.headers);
+      capturedCookie = headers.get("Cookie") ?? "";
+      return new Response(
+        `${JSON.stringify({
+          result: {
+            response: {
+              modelResponse: {
+                model: "grok-4",
+                message: "cookie override ok",
+              },
+            },
+          },
+        })}\n`,
+        {
+          status: 200,
+          headers: { "content-type": "application/x-ndjson" },
+        },
+      );
+    }
+    return originalFetch(input, init);
+  }) as typeof fetch;
+
+  const response = await (worker.fetch as any)(
+    new Request("https://example.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "grok-4",
+        stream: false,
+        messages: [{ role: "user", content: "hello" }],
+      }),
+    }),
+    createEnv({
+      proxy: {
+        cf_cookies: "cf_bm=bm-token; cf_clearance=jar-clearance",
+        cf_clearance: "manual-clearance",
+        enabled: false,
+      },
+    }),
+    createExecutionContext(),
+  );
+
+  assert.equal(response.status, 200);
+  assert.match(capturedCookie, /cf_bm=bm-token/);
+  assert.match(capturedCookie, /cf_clearance=manual-clearance/);
+  assert.doesNotMatch(capturedCookie, /cf_clearance=jar-clearance/);
+});
+
+test("chat completions keep solver-managed cookie jar unchanged when proxy refresh is enabled", async () => {
+  let capturedCookie = "";
+
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url === "https://grok.com/rest/app-chat/conversations/new") {
+      const headers = new Headers(init?.headers);
+      capturedCookie = headers.get("Cookie") ?? "";
+      return new Response(
+        `${JSON.stringify({
+          result: {
+            response: {
+              modelResponse: {
+                model: "grok-4",
+                message: "solver cookie ok",
+              },
+            },
+          },
+        })}\n`,
+        {
+          status: 200,
+          headers: { "content-type": "application/x-ndjson" },
+        },
+      );
+    }
+    return originalFetch(input, init);
+  }) as typeof fetch;
+
+  const response = await (worker.fetch as any)(
+    new Request("https://example.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "grok-4",
+        stream: false,
+        messages: [{ role: "user", content: "hello" }],
+      }),
+    }),
+    createEnv({
+      proxy: {
+        cf_cookies: "cf_bm=bm-token; cf_clearance=jar-clearance",
+        cf_clearance: "manual-clearance",
+        enabled: true,
+      },
+    }),
+    createExecutionContext(),
+  );
+
+  assert.equal(response.status, 200);
+  assert.match(capturedCookie, /cf_bm=bm-token/);
+  assert.match(capturedCookie, /cf_clearance=jar-clearance/);
+  assert.doesNotMatch(capturedCookie, /cf_clearance=manual-clearance/);
+});
+
 test.after(() => {
   globalThis.fetch = originalFetch;
 });

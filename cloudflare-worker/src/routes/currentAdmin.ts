@@ -3,7 +3,7 @@ import { isAdminAuthorized, requireAdminAuth } from "../auth";
 import { getCurrentConfig, updateCurrentConfig } from "../currentConfig";
 import type { Env } from "../env";
 import { checkRateLimits } from "../grok/rateLimits";
-import { normalizeCfCookie, getSettings } from "../settings";
+import { buildSsoCookie, getSettings } from "../settings";
 import {
   createBatchTask,
   finishBatchTask,
@@ -48,7 +48,6 @@ async function loadTokenTypeMap(env: Env, tokens: string[]): Promise<Map<string,
 
 async function runRefreshBatch(env: Env, taskId: string, tokens: string[]): Promise<void> {
   const settings = await getSettings(env);
-  const cf = normalizeCfCookie(settings.grok.cf_clearance ?? "");
   const tokenTypeMap = await loadTokenTypeMap(env, tokens);
   const results: Record<string, boolean> = {};
   let processed = 0;
@@ -61,7 +60,7 @@ async function runRefreshBatch(env: Env, taskId: string, tokens: string[]): Prom
       return;
     }
 
-    const cookie = cf ? `sso-rw=${token};sso=${token};${cf}` : `sso-rw=${token};sso=${token}`;
+    const cookie = buildSsoCookie(token, settings.grok);
     const tokenType = tokenTypeMap.get(token) ?? "sso";
     let ok = false;
 

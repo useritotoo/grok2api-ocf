@@ -3,7 +3,7 @@ import { cors } from "hono/cors";
 import type { Env } from "../env";
 import { requireApiAuth, requireModelAuth } from "../auth";
 import { getCurrentConfig } from "../currentConfig";
-import { getSettings, normalizeCfCookie } from "../settings";
+import { buildSsoCookie, getSettings } from "../settings";
 import { isValidModel, MODEL_CONFIG } from "../grok/models";
 import {
   extractContent,
@@ -689,8 +689,8 @@ function parseAllowedImageMime(file: File): string | null {
   return null;
 }
 
-function buildCookie(token: string, cf: string): string {
-  return cf ? `sso-rw=${token};sso=${token};${cf}` : `sso-rw=${token};sso=${token}`;
+function buildCookie(token: string, settings: Awaited<ReturnType<typeof getSettings>>["grok"]): string {
+  return buildSsoCookie(token, settings);
 }
 
 async function runImageCall(args: {
@@ -1290,8 +1290,7 @@ openAiRoutes.post("/chat/completions", async (c) => {
       if (!chosen) return c.json(openAiError("No available token", "NO_AVAILABLE_TOKEN"), 503);
 
       const jwt = chosen.token;
-      const cf = normalizeCfCookie(settingsBundle.grok.cf_clearance ?? "");
-      const cookie = cf ? `sso-rw=${jwt};sso=${jwt};${cf}` : `sso-rw=${jwt};sso=${jwt}`;
+      const cookie = buildCookie(jwt, settingsBundle.grok);
 
       const { content, attachments } = extractContent(body.messages as any);
       const videoPlan = isVideoModel
@@ -1618,8 +1617,6 @@ openAiRoutes.post("/images/generations", async (c) => {
     const responseFormat = parsedResponseFormat.value;
     const responseField = responseFieldName(responseFormat);
     const baseUrl = baseUrlFromSettings(settingsBundle, origin);
-    const cf = normalizeCfCookie(settingsBundle.grok.cf_clearance ?? "");
-
     const quota = await enforceQuota({
       env: c.env,
       apiAuth: c.get("apiAuth"),
@@ -1633,7 +1630,7 @@ openAiRoutes.post("/images/generations", async (c) => {
       if (imageMethod === IMAGE_METHOD_IMAGINE_WS_EXPERIMENTAL) {
         const experimentalToken = await selectBestToken(c.env.DB, requestedModel);
         if (experimentalToken) {
-          const experimentalCookie = buildCookie(experimentalToken.token, cf);
+          const experimentalCookie = buildCookie(experimentalToken.token, settingsBundle.grok);
           const streamBody = createExperimentalImageEventStream({
             prompt: imageCallPrompt("generation", prompt),
             n,
@@ -1679,7 +1676,7 @@ openAiRoutes.post("/images/generations", async (c) => {
           { status: 200, headers: streamHeaders() },
         );
       }
-      const cookie = buildCookie(chosen.token, cf);
+      const cookie = buildCookie(chosen.token, settingsBundle.grok);
 
       const upstream = await runImageStreamCall({
         requestModel: requestedModel,
@@ -1738,7 +1735,7 @@ openAiRoutes.post("/images/generations", async (c) => {
     if (imageMethod === IMAGE_METHOD_IMAGINE_WS_EXPERIMENTAL) {
       const experimentalToken = await selectBestToken(c.env.DB, requestedModel);
       if (experimentalToken) {
-        const experimentalCookie = buildCookie(experimentalToken.token, cf);
+        const experimentalCookie = buildCookie(experimentalToken.token, settingsBundle.grok);
         try {
           const urls = await collectExperimentalGenerationImages({
             prompt: imageCallPrompt("generation", prompt),
@@ -1779,7 +1776,7 @@ openAiRoutes.post("/images/generations", async (c) => {
       async () => {
         const chosen = await selectBestToken(c.env.DB, requestedModel);
         if (!chosen) throw new Error("No available token");
-        const cookie = buildCookie(chosen.token, cf);
+        const cookie = buildCookie(chosen.token, settingsBundle.grok);
         try {
           return await runImageCall({
             requestModel: requestedModel,
@@ -1918,8 +1915,7 @@ openAiRoutes.post("/images/edits", async (c) => {
       }
       return c.json(openAiError("No available token", "NO_AVAILABLE_TOKEN"), 503);
     }
-    const cf = normalizeCfCookie(settingsBundle.grok.cf_clearance ?? "");
-    const cookie = buildCookie(chosen.token, cf);
+    const cookie = buildCookie(chosen.token, settingsBundle.grok);
 
     const fileIds: string[] = [];
     const fileUris: string[] = [];

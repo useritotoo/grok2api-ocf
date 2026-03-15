@@ -1,5 +1,5 @@
 import type { GrokSettings } from "../settings";
-import { normalizeCfCookie } from "../settings";
+import { buildSsoCookie } from "../settings";
 import { getDynamicHeaders } from "./headers";
 
 const LIST_API = "https://grok.com/rest/assets";
@@ -39,8 +39,7 @@ export function toOnlinePool(tokenType: "sso" | "ssoSuper"): "ssoBasic" | "ssoSu
 }
 
 function buildCookie(token: string, settings: GrokSettings): string {
-  const cfCookie = normalizeCfCookie(settings.cf_clearance ?? "");
-  return cfCookie ? `sso-rw=${token};sso=${token};${cfCookie}` : `sso-rw=${token};sso=${token}`;
+  return buildSsoCookie(token, settings);
 }
 
 function withTimeout(init: RequestInit): RequestInit {

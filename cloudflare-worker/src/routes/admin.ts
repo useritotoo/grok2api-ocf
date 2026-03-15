@@ -2,9 +2,9 @@ import { Hono } from "hono";
 import type { Env } from "../env";
 import { requireAdminAuth } from "../auth";
 import {
+  buildSsoCookie,
   getSettings,
   saveSettings,
-  normalizeCfCookie,
   normalizeImageGenerationMethod,
 } from "../settings";
 import {
@@ -777,7 +777,6 @@ adminRoutes.get("/api/v1/admin/imagine/ws", async (c) => {
   }
 
   const settings = await getSettings(c.env);
-  const cf = normalizeCfCookie(settings.grok.cf_clearance ?? "");
 
   let socketClosed = false;
   let runToken = 0;
@@ -836,9 +835,7 @@ adminRoutes.get("/api/v1/admin/imagine/ws", async (c) => {
             continue;
           }
 
-          const cookie = cf
-            ? `sso-rw=${chosen.token};sso=${chosen.token};${cf}`
-            : `sso-rw=${chosen.token};sso=${chosen.token}`;
+          const cookie = buildSsoCookie(chosen.token, settings.grok);
           const startAt = Date.now();
           const urls = await generateImagineWs({
             prompt,
@@ -1087,7 +1084,6 @@ adminRoutes.post("/api/v1/admin/tokens/refresh", requireAdminAuth, async (c) => 
     if (!unique.length) return c.json(legacyErr("No tokens provided"), 400);
 
     const settings = await getSettings(c.env);
-    const cf = normalizeCfCookie(settings.grok.cf_clearance ?? "");
 
     const placeholders = unique.map(() => "?").join(",");
     const typeRows = placeholders
@@ -1102,7 +1098,7 @@ adminRoutes.post("/api/v1/admin/tokens/refresh", requireAdminAuth, async (c) => 
     const results: Record<string, boolean> = {};
     for (const t of unique) {
       try {
-        const cookie = cf ? `sso-rw=${t};sso=${t};${cf}` : `sso-rw=${t};sso=${t}`;
+        const cookie = buildSsoCookie(t, settings.grok);
         const tokenType = tokenTypeByToken.get(t) ?? "sso";
         const r = await checkRateLimits(cookie, settings.grok, "grok-4");
         const remaining = (r as any)?.remainingTokens;
@@ -1479,8 +1475,7 @@ adminRoutes.post("/api/tokens/test", requireAdminAuth, async (c) => {
     const token = String(body.token ?? "");
     const settings = await getSettings(c.env);
 
-    const cf = normalizeCfCookie(settings.grok.cf_clearance ?? "");
-    const cookie = cf ? `sso-rw=${token};sso=${token};${cf}` : `sso-rw=${token};sso=${token}`;
+    const cookie = buildSsoCookie(token, settings.grok);
 
     const result = await checkRateLimits(cookie, settings.grok, "grok-4");
     if (result) {
@@ -1565,7 +1560,6 @@ adminRoutes.post("/api/tokens/refresh-all", requireAdminAuth, async (c) => {
     });
 
     const settings = await getSettings(c.env);
-    const cf = normalizeCfCookie(settings.grok.cf_clearance ?? "");
 
     c.executionCtx.waitUntil(
       (async () => {
@@ -1573,7 +1567,7 @@ adminRoutes.post("/api/tokens/refresh-all", requireAdminAuth, async (c) => {
         let failed = 0;
         for (let i = 0; i < tokens.length; i++) {
           const t = tokens[i]!;
-          const cookie = cf ? `sso-rw=${t.token};sso=${t.token};${cf}` : `sso-rw=${t.token};sso=${t.token}`;
+          const cookie = buildSsoCookie(t.token, settings.grok);
           const r = await checkRateLimits(cookie, settings.grok, "grok-4");
           if (r) {
             const remaining = (r as any).remainingTokens;

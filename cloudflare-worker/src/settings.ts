@@ -19,7 +19,11 @@ export interface GrokSettings {
   proxy_pool_url?: string;
   proxy_pool_interval?: number;
   cache_proxy_url?: string;
+  cf_cookies?: string;
   cf_clearance?: string; // stored as VALUE only (no "cf_clearance=" prefix)
+  browser?: string;
+  user_agent?: string;
+  proxy_enabled?: boolean;
   x_statsig_id?: string;
   dynamic_statsig?: boolean;
   filtered_tags?: string;
@@ -96,7 +100,11 @@ const DEFAULTS: SettingsBundle = {
     proxy_pool_url: "",
     proxy_pool_interval: 300,
     cache_proxy_url: "",
+    cf_cookies: "",
     cf_clearance: "",
+    browser: String(DEFAULT_CURRENT_CONFIG.proxy.browser ?? ""),
+    user_agent: String(DEFAULT_CURRENT_CONFIG.proxy.user_agent ?? ""),
+    proxy_enabled: Boolean(DEFAULT_CURRENT_CONFIG.proxy.enabled ?? false),
     x_statsig_id: "",
     dynamic_statsig: true,
     filtered_tags: "xaiartifact,xai:tool_usage_card",
@@ -173,6 +181,52 @@ export function normalizeCfCookie(value: string): string {
   return cleaned ? `cf_clearance=${cleaned}` : "";
 }
 
+function normalizeCookieJar(value: string): string {
+  return String(value ?? "")
+    .trim()
+    .replace(/^[;\s]+/, "")
+    .replace(/[;\s]+$/, "");
+}
+
+function mergeCfCookies(cfCookies: string, cfClearance: string, proxyEnabled: boolean): string {
+  let merged = normalizeCookieJar(cfCookies);
+  const normalizedClearance = stripCfPrefix(String(cfClearance ?? ""));
+
+  if (proxyEnabled) {
+    if (!merged && normalizedClearance) {
+      merged = normalizeCfCookie(normalizedClearance);
+    }
+    return merged;
+  }
+
+  if (!normalizedClearance) return merged;
+  if (!merged) return normalizeCfCookie(normalizedClearance);
+
+  if (/(?:^|;\s*)cf_clearance=/i.test(merged)) {
+    return merged.replace(
+      /(^|;\s*)cf_clearance=[^;]*/i,
+      `$1cf_clearance=${normalizedClearance}`,
+    );
+  }
+
+  return `${merged}; cf_clearance=${normalizedClearance}`;
+}
+
+export function buildSsoCookie(
+  token: string,
+  settings: Pick<GrokSettings, "cf_cookies" | "cf_clearance" | "proxy_enabled">,
+): string {
+  const normalizedToken = String(token ?? "").trim().replace(/^sso=/, "");
+  const cookieSuffix = mergeCfCookies(
+    String(settings.cf_cookies ?? ""),
+    String(settings.cf_clearance ?? ""),
+    Boolean(settings.proxy_enabled),
+  );
+  return cookieSuffix
+    ? `sso-rw=${normalizedToken};sso=${normalizedToken};${cookieSuffix}`
+    : `sso-rw=${normalizedToken};sso=${normalizedToken}`;
+}
+
 export function normalizeImageGenerationMethod(value: unknown): string {
   const candidate = String(value ?? "")
     .trim()
@@ -188,6 +242,26 @@ export function normalizeImageGenerationMethod(value: unknown): string {
 
 function arraysEqual<T>(left: T[], right: T[]): boolean {
   return left.length === right.length && left.every((value, index) => Object.is(value, right[index]));
+}
+
+function configValuesEqual(left: unknown, right: unknown): boolean {
+  if (Array.isArray(left) || Array.isArray(right)) {
+    if (!Array.isArray(left) || !Array.isArray(right)) return false;
+    return left.length === right.length && left.every((value, index) => configValuesEqual(value, right[index]));
+  }
+  if (left && right && typeof left === "object" && typeof right === "object") {
+    const leftRecord = left as Record<string, unknown>;
+    const rightRecord = right as Record<string, unknown>;
+    const leftKeys = Object.keys(leftRecord);
+    const rightKeys = Object.keys(rightRecord);
+    if (leftKeys.length !== rightKeys.length) return false;
+    return leftKeys.every((key) => Object.prototype.hasOwnProperty.call(rightRecord, key) && configValuesEqual(leftRecord[key], rightRecord[key]));
+  }
+  return Object.is(left, right);
+}
+
+function sectionHasOverrides(currentSection: Record<string, unknown>, defaultSection: Record<string, unknown>): boolean {
+  return !configValuesEqual(currentSection, defaultSection);
 }
 
 function preferLegacyString(currentValue: string, legacyValue: unknown, currentDefaultValue: string): string {
@@ -226,6 +300,35 @@ function preferLegacyNumberArray(
   return normalizeStatusCodeList(legacyValue, currentDefaultValue);
 }
 
+function resolveSectionString(
+  sectionUsesCurrentConfig: boolean,
+  currentValue: string,
+  legacyValue: unknown,
+  currentDefaultValue: string,
+): string {
+  return sectionUsesCurrentConfig ? currentValue : preferLegacyString(currentValue, legacyValue, currentDefaultValue);
+}
+
+function resolveSectionBoolean(
+  sectionUsesCurrentConfig: boolean,
+  currentValue: boolean,
+  legacyValue: unknown,
+  currentDefaultValue: boolean,
+): boolean {
+  return sectionUsesCurrentConfig ? currentValue : preferLegacyBoolean(currentValue, legacyValue, currentDefaultValue);
+}
+
+function resolveSectionNumberArray(
+  sectionUsesCurrentConfig: boolean,
+  currentValue: number[],
+  legacyValue: unknown,
+  currentDefaultValue: number[],
+): number[] {
+  return sectionUsesCurrentConfig
+    ? currentValue
+    : preferLegacyNumberArray(currentValue, legacyValue, currentDefaultValue);
+}
+
 export async function getSettings(env: Env): Promise<SettingsBundle> {
   const current = await getCurrentConfig(env);
   const legacyGlobalRow = await dbFirst<{ value: string }>(
@@ -257,6 +360,10 @@ export async function getSettings(env: Env): Promise<SettingsBundle> {
   const imageCfg = current.image ?? {};
   const assetCfg = current.asset ?? {};
   const chatCfg = current.chat ?? {};
+  const appUsesCurrentConfig = sectionHasOverrides(appCfg, DEFAULT_CURRENT_CONFIG.app);
+  const proxyUsesCurrentConfig = sectionHasOverrides(proxyCfg, DEFAULT_CURRENT_CONFIG.proxy);
+  const retryUsesCurrentConfig = sectionHasOverrides(retryCfg, DEFAULT_CURRENT_CONFIG.retry);
+  const chatUsesCurrentConfig = sectionHasOverrides(chatCfg, DEFAULT_CURRENT_CONFIG.chat);
   const legacyGlobalCfg = legacyGlobalRow?.value
     ? safeParseJson<GlobalSettings>(legacyGlobalRow.value, {} as GlobalSettings)
     : {};
@@ -270,7 +377,13 @@ export async function getSettings(env: Env): Promise<SettingsBundle> {
   const defaultApiKey = normalizeApiKeyList(DEFAULT_CURRENT_CONFIG.app.api_key)[0] ?? "";
   const defaultProxyUrl = String(DEFAULT_CURRENT_CONFIG.proxy.base_proxy_url ?? DEFAULTS.grok.proxy_url);
   const defaultCacheProxyUrl = String(DEFAULT_CURRENT_CONFIG.proxy.asset_proxy_url ?? DEFAULTS.grok.cache_proxy_url);
+  const defaultCfCookies = normalizeCookieJar(
+    String(DEFAULT_CURRENT_CONFIG.proxy.cf_cookies ?? DEFAULTS.grok.cf_cookies),
+  );
   const defaultCfClearance = stripCfPrefix(String(DEFAULT_CURRENT_CONFIG.proxy.cf_clearance ?? ""));
+  const defaultBrowser = String(DEFAULT_CURRENT_CONFIG.proxy.browser ?? DEFAULTS.grok.browser);
+  const defaultUserAgent = String(DEFAULT_CURRENT_CONFIG.proxy.user_agent ?? DEFAULTS.grok.user_agent);
+  const defaultProxyEnabled = Boolean(DEFAULT_CURRENT_CONFIG.proxy.enabled ?? DEFAULTS.grok.proxy_enabled);
   const defaultDynamicStatsig = Boolean(
     DEFAULT_CURRENT_CONFIG.app.dynamic_statsig ?? DEFAULTS.grok.dynamic_statsig,
   );
@@ -279,12 +392,6 @@ export async function getSettings(env: Env): Promise<SettingsBundle> {
     : String(DEFAULT_CURRENT_CONFIG.app.filter_tags ?? DEFAULTS.grok.filtered_tags);
   const defaultShowThinking = Boolean(DEFAULT_CURRENT_CONFIG.app.thinking ?? DEFAULTS.grok.show_thinking);
   const defaultTemporary = Boolean(DEFAULT_CURRENT_CONFIG.app.temporary ?? DEFAULTS.grok.temporary);
-  const defaultStreamChunkTimeout = Number(
-    DEFAULT_CURRENT_CONFIG.chat.stream_timeout ?? DEFAULTS.grok.stream_chunk_timeout,
-  );
-  const defaultStreamTotalTimeout = Number(
-    DEFAULT_CURRENT_CONFIG.chat.stream_timeout ?? DEFAULTS.grok.stream_total_timeout,
-  );
   const defaultRetryStatusCodes = normalizeStatusCodeList(
     DEFAULT_CURRENT_CONFIG.retry.retry_status_codes,
     DEFAULTS.grok.retry_status_codes,
@@ -296,7 +403,11 @@ export async function getSettings(env: Env): Promise<SettingsBundle> {
   const currentApiKey = normalizeApiKeyList(appCfg.api_key)[0] ?? "";
   const currentProxyUrl = String(proxyCfg.base_proxy_url ?? DEFAULTS.grok.proxy_url);
   const currentCacheProxyUrl = String(proxyCfg.asset_proxy_url ?? DEFAULTS.grok.cache_proxy_url);
+  const currentCfCookies = normalizeCookieJar(String(proxyCfg.cf_cookies ?? DEFAULTS.grok.cf_cookies));
   const currentCfClearance = stripCfPrefix(String(proxyCfg.cf_clearance ?? ""));
+  const currentBrowser = String(proxyCfg.browser ?? DEFAULTS.grok.browser);
+  const currentUserAgent = String(proxyCfg.user_agent ?? DEFAULTS.grok.user_agent);
+  const currentProxyEnabled = Boolean(proxyCfg.enabled ?? DEFAULTS.grok.proxy_enabled);
   const currentDynamicStatsig = Boolean(appCfg.dynamic_statsig ?? DEFAULTS.grok.dynamic_statsig);
   const currentFilteredTags = Array.isArray(appCfg.filter_tags)
     ? appCfg.filter_tags.map((item) => String(item ?? "").trim()).filter(Boolean).join(",")
@@ -304,7 +415,6 @@ export async function getSettings(env: Env): Promise<SettingsBundle> {
   const currentShowThinking = Boolean(appCfg.thinking ?? DEFAULTS.grok.show_thinking);
   const currentTemporary = Boolean(appCfg.temporary ?? DEFAULTS.grok.temporary);
   const currentStreamChunkTimeout = Number(chatCfg.stream_timeout ?? DEFAULTS.grok.stream_chunk_timeout);
-  const currentStreamTotalTimeout = Number(chatCfg.stream_timeout ?? DEFAULTS.grok.stream_total_timeout);
   const currentRetryStatusCodes = normalizeStatusCodeList(
     retryCfg.retry_status_codes,
     DEFAULTS.grok.retry_status_codes,
@@ -312,8 +422,9 @@ export async function getSettings(env: Env): Promise<SettingsBundle> {
 
   const globalCfg: GlobalSettings = {
     ...DEFAULTS.global,
-    base_url: preferLegacyString(currentBaseUrl, legacyGlobalCfg.base_url, defaultBaseUrl),
-    image_mode: preferLegacyString(
+    base_url: resolveSectionString(appUsesCurrentConfig, currentBaseUrl, legacyGlobalCfg.base_url, defaultBaseUrl),
+    image_mode: resolveSectionString(
+      appUsesCurrentConfig,
       currentImageMode,
       legacyGlobalCfg.image_mode,
       defaultImageMode,
@@ -323,13 +434,18 @@ export async function getSettings(env: Env): Promise<SettingsBundle> {
       legacyGlobalCfg.admin_username,
       DEFAULTS.global.admin_username,
     ),
-    admin_password: preferLegacyString(currentAdminPassword, legacyGlobalCfg.admin_password, defaultAdminPassword),
+    admin_password: resolveSectionString(
+      appUsesCurrentConfig,
+      currentAdminPassword,
+      legacyGlobalCfg.admin_password,
+      defaultAdminPassword,
+    ),
   };
 
   const grokCfg: GrokSettings = {
     ...DEFAULTS.grok,
-    api_key: preferLegacyString(currentApiKey, legacyGrokCfg.api_key, defaultApiKey),
-    proxy_url: preferLegacyString(currentProxyUrl, legacyGrokCfg.proxy_url, defaultProxyUrl),
+    api_key: resolveSectionString(appUsesCurrentConfig, currentApiKey, legacyGrokCfg.api_key, defaultApiKey),
+    proxy_url: resolveSectionString(proxyUsesCurrentConfig, currentProxyUrl, legacyGrokCfg.proxy_url, defaultProxyUrl),
     proxy_pool_url: preferLegacyString(
       DEFAULTS.grok.proxy_pool_url,
       legacyGrokCfg.proxy_pool_url,
@@ -340,23 +456,48 @@ export async function getSettings(env: Env): Promise<SettingsBundle> {
       legacyGrokCfg.proxy_pool_interval,
       DEFAULTS.grok.proxy_pool_interval,
     ),
-    cache_proxy_url: preferLegacyString(currentCacheProxyUrl, legacyGrokCfg.cache_proxy_url, defaultCacheProxyUrl),
-    cf_clearance: stripCfPrefix(
-      preferLegacyString(currentCfClearance, legacyGrokCfg.cf_clearance, defaultCfClearance),
+    cache_proxy_url: resolveSectionString(
+      proxyUsesCurrentConfig,
+      currentCacheProxyUrl,
+      legacyGrokCfg.cache_proxy_url,
+      defaultCacheProxyUrl,
     ),
+    cf_cookies: proxyUsesCurrentConfig ? currentCfCookies : defaultCfCookies,
+    cf_clearance: stripCfPrefix(
+      resolveSectionString(
+        proxyUsesCurrentConfig,
+        currentCfClearance,
+        legacyGrokCfg.cf_clearance,
+        defaultCfClearance,
+      ),
+    ),
+    browser: proxyUsesCurrentConfig ? currentBrowser : defaultBrowser,
+    user_agent: proxyUsesCurrentConfig ? currentUserAgent : defaultUserAgent,
+    proxy_enabled: proxyUsesCurrentConfig ? currentProxyEnabled : defaultProxyEnabled,
     x_statsig_id: preferLegacyString(
       DEFAULTS.grok.x_statsig_id,
       legacyGrokCfg.x_statsig_id,
       DEFAULTS.grok.x_statsig_id,
     ),
-    dynamic_statsig: preferLegacyBoolean(
+    dynamic_statsig: resolveSectionBoolean(
+      appUsesCurrentConfig,
       currentDynamicStatsig,
       legacyGrokCfg.dynamic_statsig,
       defaultDynamicStatsig,
     ),
-    filtered_tags: preferLegacyString(currentFilteredTags, legacyGrokCfg.filtered_tags, defaultFilteredTags),
-    show_thinking: preferLegacyBoolean(currentShowThinking, legacyGrokCfg.show_thinking, defaultShowThinking),
-    temporary: preferLegacyBoolean(currentTemporary, legacyGrokCfg.temporary, defaultTemporary),
+    filtered_tags: resolveSectionString(
+      appUsesCurrentConfig,
+      currentFilteredTags,
+      legacyGrokCfg.filtered_tags,
+      defaultFilteredTags,
+    ),
+    show_thinking: resolveSectionBoolean(
+      appUsesCurrentConfig,
+      currentShowThinking,
+      legacyGrokCfg.show_thinking,
+      defaultShowThinking,
+    ),
+    temporary: resolveSectionBoolean(appUsesCurrentConfig, currentTemporary, legacyGrokCfg.temporary, defaultTemporary),
     video_poster_preview: preferLegacyBoolean(
       DEFAULTS.grok.video_poster_preview,
       legacyGrokCfg.video_poster_preview,
@@ -367,17 +508,20 @@ export async function getSettings(env: Env): Promise<SettingsBundle> {
       legacyGrokCfg.stream_first_response_timeout,
       DEFAULTS.grok.stream_first_response_timeout,
     ),
-    stream_chunk_timeout: preferLegacyNumber(
-      currentStreamChunkTimeout,
-      legacyGrokCfg.stream_chunk_timeout,
-      defaultStreamChunkTimeout,
-    ),
+    stream_chunk_timeout: chatUsesCurrentConfig
+      ? (Number.isFinite(currentStreamChunkTimeout) ? currentStreamChunkTimeout : DEFAULTS.grok.stream_chunk_timeout)
+      : preferLegacyNumber(
+        DEFAULTS.grok.stream_chunk_timeout,
+        legacyGrokCfg.stream_chunk_timeout,
+        DEFAULTS.grok.stream_chunk_timeout,
+      ),
     stream_total_timeout: preferLegacyNumber(
-      currentStreamTotalTimeout,
+      DEFAULTS.grok.stream_total_timeout,
       legacyGrokCfg.stream_total_timeout,
-      defaultStreamTotalTimeout,
+      DEFAULTS.grok.stream_total_timeout,
     ),
-    retry_status_codes: preferLegacyNumberArray(
+    retry_status_codes: resolveSectionNumberArray(
+      retryUsesCurrentConfig,
       currentRetryStatusCodes,
       legacyGrokCfg.retry_status_codes,
       defaultRetryStatusCodes,
@@ -392,7 +536,11 @@ export async function getSettings(env: Env): Promise<SettingsBundle> {
   const mergedGrok = {
     ...DEFAULTS.grok,
     ...grokCfg,
+    cf_cookies: normalizeCookieJar(grokCfg.cf_cookies ?? ""),
     cf_clearance: stripCfPrefix(grokCfg.cf_clearance ?? ""),
+    browser: String(grokCfg.browser ?? DEFAULTS.grok.browser),
+    user_agent: String(grokCfg.user_agent ?? DEFAULTS.grok.user_agent),
+    proxy_enabled: Boolean(grokCfg.proxy_enabled ?? DEFAULTS.grok.proxy_enabled),
   };
   mergedGrok.image_generation_method = normalizeImageGenerationMethod(
     mergedGrok.image_generation_method,

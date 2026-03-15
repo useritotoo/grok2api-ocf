@@ -25,7 +25,7 @@ import {
 } from "../repo/functionSessions";
 import { listCacheRowsByType } from "../repo/cache";
 import { applyCooldown, recordTokenFailure, selectBestToken } from "../repo/tokens";
-import { getSettings, normalizeCfCookie } from "../settings";
+import { buildSsoCookie, getSettings } from "../settings";
 import { buildInternalRequestUrl } from "./functionHelpers";
 import { ImagineWsError, collectImagineWsImages } from "../grok/imagineExperimental";
 import { extractVideoId, upscaleVideoById } from "../grok/video";
@@ -666,10 +666,7 @@ async function runImagineWsBatch(args: {
     throw new Error("No available token");
   }
 
-  const cf = normalizeCfCookie(settingsBundle.grok.cf_clearance ?? "");
-  const cookie = cf
-    ? `sso-rw=${chosen.token};sso=${chosen.token};${cf}`
-    : `sso-rw=${chosen.token};sso=${chosen.token}`;
+  const cookie = buildSsoCookie(chosen.token, settingsBundle.grok);
   const emittedPartialKeys = new Set<string>();
   const emittedCompletedIds = new Set<string>();
 
@@ -837,10 +834,7 @@ async function buildVoiceTokenResponse(
     );
   }
 
-  const cf = normalizeCfCookie(settings.grok.cf_clearance ?? "");
-  const cookie = cf
-    ? `sso-rw=${chosen.token};sso=${chosen.token};${cf}`
-    : `sso-rw=${chosen.token};sso=${chosen.token}`;
+  const cookie = buildSsoCookie(chosen.token, settings.grok);
 
   const headers = getDynamicHeaders(settings.grok, "/rest/livekit/tokens");
   headers.Cookie = cookie;
@@ -1344,10 +1338,7 @@ functionRoutes.post("/v1/function/video/upscale", async (c) => {
     return c.json({ error: "No available tokens for video upscale", code: "no_token" }, 503);
   }
 
-  const cf = normalizeCfCookie(settings.grok.cf_clearance ?? "");
-  const cookie = cf
-    ? `sso-rw=${chosen.token};sso=${chosen.token};${cf}`
-    : `sso-rw=${chosen.token};sso=${chosen.token}`;
+  const cookie = buildSsoCookie(chosen.token, settings.grok);
   const result = await upscaleVideoById({
     videoId,
     cookie,
