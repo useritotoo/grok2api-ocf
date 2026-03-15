@@ -49,7 +49,7 @@ body {
 }
 
 .chat-subtitle {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--accents-4);
   margin-top: 4px;
 }
@@ -89,7 +89,7 @@ body {
 .chat-empty {
   text-align: center;
   color: var(--accents-4);
-  font-size: 13px;
+  font-size: 14px;
   padding: 48px 0;
 }
 
@@ -113,7 +113,7 @@ body {
   align-items: center;
   gap: 6px;
   color: var(--accents-4);
-  font-size: 12px;
+  font-size: 13px;
   margin-left: 2px;
 }
 
@@ -121,7 +121,7 @@ body {
   border: none;
   background: transparent;
   color: var(--accents-4);
-  font-size: 12px;
+  font-size: 13px;
   padding: 4px 6px;
   border-radius: 999px;
   cursor: pointer;
@@ -135,8 +135,8 @@ body {
 
 .message-bubble {
   max-width: 100%;
-  font-size: 14px;
-  line-height: 1.6;
+  font-size: 16px;
+  line-height: 1.72;
   color: var(--chat-ink);
   width: 100%;
 }
@@ -155,8 +155,8 @@ body {
   min-width: 0;
   border-radius: 16px;
   background: #efeeea;
-  padding: 6px 10px;
-  line-height: 1.45;
+  padding: 8px 12px;
+  line-height: 1.58;
   border: 1px solid var(--chat-border);
 }
 
@@ -212,7 +212,7 @@ body {
   border: 1px solid var(--chat-border);
   border-radius: 6px;
   padding: 2px 6px;
-  font-size: 12px;
+  font-size: 13px;
   font-family: 'Geist Mono', monospace;
   white-space: pre-wrap;
 }
@@ -224,7 +224,7 @@ body {
   padding: 12px 14px;
   overflow-x: auto;
   margin-top: 12px;
-  font-size: 12px;
+  font-size: 13px;
   font-family: 'Geist Mono', monospace;
 }
 
@@ -247,27 +247,27 @@ body {
 }
 
 .message-content.rendered h1 {
-  font-size: 20px;
+  font-size: 22px;
 }
 
 .message-content.rendered h2 {
-  font-size: 18px;
+  font-size: 20px;
 }
 
 .message-content.rendered h3 {
-  font-size: 16px;
+  font-size: 18px;
 }
 
 .message-content.rendered h4 {
-  font-size: 15px;
+  font-size: 17px;
 }
 
 .message-content.rendered h5 {
-  font-size: 14px;
+  font-size: 16px;
 }
 
 .message-content.rendered h6 {
-  font-size: 13px;
+  font-size: 15px;
 }
 
 .message-content.rendered p {
@@ -328,7 +328,7 @@ body {
 .message-content.rendered table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .message-content.rendered th,
@@ -354,7 +354,7 @@ body {
 
 .think-summary {
   cursor: pointer;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--accents-4);
   list-style: none;
   display: inline-flex;
@@ -398,9 +398,9 @@ body {
   margin-left: 0;
   padding-left: 0;
   border-left: none;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--accents-5);
-  line-height: 1.6;
+  line-height: 1.7;
   max-height: 0;
   opacity: 0;
   overflow: hidden;
@@ -475,7 +475,7 @@ body {
 
 .think-agent summary {
   cursor: pointer;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
   color: var(--chat-ink);
   list-style: none;
@@ -556,7 +556,7 @@ body {
 
 .think-rollout-group summary {
   cursor: pointer;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--chat-ink);
   list-style: none;
   display: flex;
@@ -617,7 +617,7 @@ body {
 }
 
 .think-item-type {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--accents-4);
   display: inline-flex;
   align-items: center;
@@ -650,9 +650,9 @@ body {
 }
 
 .think-item-body {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--accents-5);
-  line-height: 1.6;
+  line-height: 1.7;
 }
 
 .composer-shell {
@@ -728,8 +728,8 @@ body {
   border: none;
   outline: none;
   resize: none;
-  font-size: 14px;
-  line-height: 1.4;
+  font-size: 15px;
+  line-height: 1.6;
   background: transparent;
   color: var(--chat-ink);
   overflow-y: auto;
@@ -749,7 +749,7 @@ body {
   border-radius: 999px;
   border: 1px solid var(--chat-border);
   background: var(--chat-surface);
-  font-size: 12px;
+  font-size: 13px;
   height: 36px;
 }
 
@@ -848,7 +848,7 @@ body {
   border-radius: 999px;
   border: 1px solid var(--chat-border);
   background: #fff;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--chat-ink);
   max-width: 160px;
   height: 28px;
@@ -956,7 +956,7 @@ body.chat-lightbox-open {
   border: 1px solid var(--chat-border);
   background: var(--chat-surface);
   color: var(--chat-ink);
-  font-size: 12px;
+  font-size: 13px;
   padding: 6px 12px;
   border-radius: 999px;
   transition: border 0.2s ease;
@@ -1109,7 +1109,7 @@ body.chat-lightbox-open {
 .session-title {
   flex: 1;
   min-width: 0;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--chat-ink);
   white-space: nowrap;
   overflow: hidden;
@@ -1243,7 +1243,7 @@ body.chat-lightbox-open {
 }
 
 .model-label {
-  font-size: 12px;
+  font-size: 13px;
   color: var(--chat-ink);
 }
 
@@ -1263,7 +1263,7 @@ body.chat-lightbox-open {
 .model-option {
   padding: 6px 8px;
   border-radius: 8px;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--chat-ink);
   cursor: pointer;
 }
@@ -1295,7 +1295,7 @@ body.chat-lightbox-open {
   border: 1px solid var(--chat-border);
   border-radius: 12px;
   padding: 10px 12px;
-  font-size: 13px;
+  font-size: 14px;
   font-family: 'Geist Sans', sans-serif;
 }
 

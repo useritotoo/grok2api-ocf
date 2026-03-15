@@ -1,5 +1,5 @@
 import { dbFirst, dbRun } from "./db";
-import { getCurrentConfig, normalizeApiKeyList } from "./currentConfig";
+import { DEFAULT_CURRENT_CONFIG, getCurrentConfig, normalizeApiKeyList } from "./currentConfig";
 import type { Env } from "./env";
 import { nowMs } from "./utils/time";
 
@@ -186,8 +186,58 @@ export function normalizeImageGenerationMethod(value: unknown): string {
   return IMAGE_METHOD_LEGACY;
 }
 
+function arraysEqual<T>(left: T[], right: T[]): boolean {
+  return left.length === right.length && left.every((value, index) => Object.is(value, right[index]));
+}
+
+function preferLegacyString(currentValue: string, legacyValue: unknown, currentDefaultValue: string): string {
+  if (currentValue !== currentDefaultValue) return currentValue;
+  const normalizedLegacy = String(legacyValue ?? "").trim();
+  return normalizedLegacy || currentValue;
+}
+
+function preferLegacyBoolean(
+  currentValue: boolean,
+  legacyValue: unknown,
+  currentDefaultValue: boolean,
+): boolean {
+  if (currentValue !== currentDefaultValue || typeof legacyValue !== "boolean") return currentValue;
+  return legacyValue;
+}
+
+function preferLegacyNumber(currentValue: number, legacyValue: unknown, currentDefaultValue: number): number {
+  if (currentValue !== currentDefaultValue) return currentValue;
+  const normalizedLegacy = Number(legacyValue);
+  return Number.isFinite(normalizedLegacy) ? normalizedLegacy : currentValue;
+}
+
+function normalizeStatusCodeList(value: unknown, fallback: number[]): number[] {
+  if (!Array.isArray(value)) return [...fallback];
+  const normalized = value.map((item) => Number(item)).filter((item) => Number.isFinite(item));
+  return normalized.length ? normalized : [...fallback];
+}
+
+function preferLegacyNumberArray(
+  currentValue: number[],
+  legacyValue: unknown,
+  currentDefaultValue: number[],
+): number[] {
+  if (!arraysEqual(currentValue, currentDefaultValue) || !Array.isArray(legacyValue)) return currentValue;
+  return normalizeStatusCodeList(legacyValue, currentDefaultValue);
+}
+
 export async function getSettings(env: Env): Promise<SettingsBundle> {
   const current = await getCurrentConfig(env);
+  const legacyGlobalRow = await dbFirst<{ value: string }>(
+    env.DB,
+    "SELECT value FROM settings WHERE key = ?",
+    ["global"],
+  );
+  const legacyGrokRow = await dbFirst<{ value: string }>(
+    env.DB,
+    "SELECT value FROM settings WHERE key = ?",
+    ["grok"],
+  );
   const legacyPerformanceRow = await dbFirst<{ value: string }>(
     env.DB,
     "SELECT value FROM settings WHERE key = ?",
@@ -207,32 +257,136 @@ export async function getSettings(env: Env): Promise<SettingsBundle> {
   const imageCfg = current.image ?? {};
   const assetCfg = current.asset ?? {};
   const chatCfg = current.chat ?? {};
+  const legacyGlobalCfg = legacyGlobalRow?.value
+    ? safeParseJson<GlobalSettings>(legacyGlobalRow.value, {} as GlobalSettings)
+    : {};
+  const legacyGrokCfg = legacyGrokRow?.value
+    ? safeParseJson<GrokSettings>(legacyGrokRow.value, {} as GrokSettings)
+    : {};
+
+  const defaultBaseUrl = String(DEFAULT_CURRENT_CONFIG.app.app_url ?? DEFAULTS.global.base_url);
+  const defaultImageMode = String(DEFAULT_CURRENT_CONFIG.app.image_format ?? DEFAULTS.global.image_mode);
+  const defaultAdminPassword = String(DEFAULT_CURRENT_CONFIG.app.app_key ?? DEFAULTS.global.admin_password);
+  const defaultApiKey = normalizeApiKeyList(DEFAULT_CURRENT_CONFIG.app.api_key)[0] ?? "";
+  const defaultProxyUrl = String(DEFAULT_CURRENT_CONFIG.proxy.base_proxy_url ?? DEFAULTS.grok.proxy_url);
+  const defaultCacheProxyUrl = String(DEFAULT_CURRENT_CONFIG.proxy.asset_proxy_url ?? DEFAULTS.grok.cache_proxy_url);
+  const defaultCfClearance = stripCfPrefix(String(DEFAULT_CURRENT_CONFIG.proxy.cf_clearance ?? ""));
+  const defaultDynamicStatsig = Boolean(
+    DEFAULT_CURRENT_CONFIG.app.dynamic_statsig ?? DEFAULTS.grok.dynamic_statsig,
+  );
+  const defaultFilteredTags = Array.isArray(DEFAULT_CURRENT_CONFIG.app.filter_tags)
+    ? DEFAULT_CURRENT_CONFIG.app.filter_tags.map((item) => String(item ?? "").trim()).filter(Boolean).join(",")
+    : String(DEFAULT_CURRENT_CONFIG.app.filter_tags ?? DEFAULTS.grok.filtered_tags);
+  const defaultShowThinking = Boolean(DEFAULT_CURRENT_CONFIG.app.thinking ?? DEFAULTS.grok.show_thinking);
+  const defaultTemporary = Boolean(DEFAULT_CURRENT_CONFIG.app.temporary ?? DEFAULTS.grok.temporary);
+  const defaultStreamChunkTimeout = Number(
+    DEFAULT_CURRENT_CONFIG.chat.stream_timeout ?? DEFAULTS.grok.stream_chunk_timeout,
+  );
+  const defaultStreamTotalTimeout = Number(
+    DEFAULT_CURRENT_CONFIG.chat.stream_timeout ?? DEFAULTS.grok.stream_total_timeout,
+  );
+  const defaultRetryStatusCodes = normalizeStatusCodeList(
+    DEFAULT_CURRENT_CONFIG.retry.retry_status_codes,
+    DEFAULTS.grok.retry_status_codes,
+  );
+
+  const currentBaseUrl = String(appCfg.app_url ?? DEFAULTS.global.base_url);
+  const currentImageMode = String(appCfg.image_format ?? DEFAULTS.global.image_mode);
+  const currentAdminPassword = String(appCfg.app_key ?? DEFAULTS.global.admin_password);
+  const currentApiKey = normalizeApiKeyList(appCfg.api_key)[0] ?? "";
+  const currentProxyUrl = String(proxyCfg.base_proxy_url ?? DEFAULTS.grok.proxy_url);
+  const currentCacheProxyUrl = String(proxyCfg.asset_proxy_url ?? DEFAULTS.grok.cache_proxy_url);
+  const currentCfClearance = stripCfPrefix(String(proxyCfg.cf_clearance ?? ""));
+  const currentDynamicStatsig = Boolean(appCfg.dynamic_statsig ?? DEFAULTS.grok.dynamic_statsig);
+  const currentFilteredTags = Array.isArray(appCfg.filter_tags)
+    ? appCfg.filter_tags.map((item) => String(item ?? "").trim()).filter(Boolean).join(",")
+    : String(appCfg.filter_tags ?? DEFAULTS.grok.filtered_tags);
+  const currentShowThinking = Boolean(appCfg.thinking ?? DEFAULTS.grok.show_thinking);
+  const currentTemporary = Boolean(appCfg.temporary ?? DEFAULTS.grok.temporary);
+  const currentStreamChunkTimeout = Number(chatCfg.stream_timeout ?? DEFAULTS.grok.stream_chunk_timeout);
+  const currentStreamTotalTimeout = Number(chatCfg.stream_timeout ?? DEFAULTS.grok.stream_total_timeout);
+  const currentRetryStatusCodes = normalizeStatusCodeList(
+    retryCfg.retry_status_codes,
+    DEFAULTS.grok.retry_status_codes,
+  );
 
   const globalCfg: GlobalSettings = {
     ...DEFAULTS.global,
-    base_url: String(appCfg.app_url ?? DEFAULTS.global.base_url),
-    image_mode: (String(appCfg.image_format ?? DEFAULTS.global.image_mode) as GlobalSettings["image_mode"]) ?? "url",
-    admin_username: "admin",
-    admin_password: String(appCfg.app_key ?? DEFAULTS.global.admin_password),
+    base_url: preferLegacyString(currentBaseUrl, legacyGlobalCfg.base_url, defaultBaseUrl),
+    image_mode: preferLegacyString(
+      currentImageMode,
+      legacyGlobalCfg.image_mode,
+      defaultImageMode,
+    ) as GlobalSettings["image_mode"],
+    admin_username: preferLegacyString(
+      DEFAULTS.global.admin_username,
+      legacyGlobalCfg.admin_username,
+      DEFAULTS.global.admin_username,
+    ),
+    admin_password: preferLegacyString(currentAdminPassword, legacyGlobalCfg.admin_password, defaultAdminPassword),
   };
 
   const grokCfg: GrokSettings = {
     ...DEFAULTS.grok,
-    api_key: normalizeApiKeyList(appCfg.api_key)[0] ?? "",
-    proxy_url: String(proxyCfg.base_proxy_url ?? DEFAULTS.grok.proxy_url),
-    cache_proxy_url: String(proxyCfg.asset_proxy_url ?? DEFAULTS.grok.cache_proxy_url),
-    cf_clearance: stripCfPrefix(String(proxyCfg.cf_clearance ?? "")),
-    dynamic_statsig: Boolean(appCfg.dynamic_statsig ?? DEFAULTS.grok.dynamic_statsig),
-    filtered_tags: Array.isArray(appCfg.filter_tags)
-      ? appCfg.filter_tags.map((item) => String(item ?? "").trim()).filter(Boolean).join(",")
-      : String(appCfg.filter_tags ?? DEFAULTS.grok.filtered_tags),
-    show_thinking: Boolean(appCfg.thinking ?? DEFAULTS.grok.show_thinking),
-    temporary: Boolean(appCfg.temporary ?? DEFAULTS.grok.temporary),
-    stream_chunk_timeout: Number(chatCfg.stream_timeout ?? DEFAULTS.grok.stream_chunk_timeout),
-    stream_total_timeout: Number(chatCfg.stream_timeout ?? DEFAULTS.grok.stream_total_timeout),
-    retry_status_codes: Array.isArray(retryCfg.retry_status_codes)
-      ? retryCfg.retry_status_codes.map((item) => Number(item)).filter((item) => Number.isFinite(item))
-      : DEFAULTS.grok.retry_status_codes,
+    api_key: preferLegacyString(currentApiKey, legacyGrokCfg.api_key, defaultApiKey),
+    proxy_url: preferLegacyString(currentProxyUrl, legacyGrokCfg.proxy_url, defaultProxyUrl),
+    proxy_pool_url: preferLegacyString(
+      DEFAULTS.grok.proxy_pool_url,
+      legacyGrokCfg.proxy_pool_url,
+      DEFAULTS.grok.proxy_pool_url,
+    ),
+    proxy_pool_interval: preferLegacyNumber(
+      DEFAULTS.grok.proxy_pool_interval,
+      legacyGrokCfg.proxy_pool_interval,
+      DEFAULTS.grok.proxy_pool_interval,
+    ),
+    cache_proxy_url: preferLegacyString(currentCacheProxyUrl, legacyGrokCfg.cache_proxy_url, defaultCacheProxyUrl),
+    cf_clearance: stripCfPrefix(
+      preferLegacyString(currentCfClearance, legacyGrokCfg.cf_clearance, defaultCfClearance),
+    ),
+    x_statsig_id: preferLegacyString(
+      DEFAULTS.grok.x_statsig_id,
+      legacyGrokCfg.x_statsig_id,
+      DEFAULTS.grok.x_statsig_id,
+    ),
+    dynamic_statsig: preferLegacyBoolean(
+      currentDynamicStatsig,
+      legacyGrokCfg.dynamic_statsig,
+      defaultDynamicStatsig,
+    ),
+    filtered_tags: preferLegacyString(currentFilteredTags, legacyGrokCfg.filtered_tags, defaultFilteredTags),
+    show_thinking: preferLegacyBoolean(currentShowThinking, legacyGrokCfg.show_thinking, defaultShowThinking),
+    temporary: preferLegacyBoolean(currentTemporary, legacyGrokCfg.temporary, defaultTemporary),
+    video_poster_preview: preferLegacyBoolean(
+      DEFAULTS.grok.video_poster_preview,
+      legacyGrokCfg.video_poster_preview,
+      DEFAULTS.grok.video_poster_preview,
+    ),
+    stream_first_response_timeout: preferLegacyNumber(
+      DEFAULTS.grok.stream_first_response_timeout,
+      legacyGrokCfg.stream_first_response_timeout,
+      DEFAULTS.grok.stream_first_response_timeout,
+    ),
+    stream_chunk_timeout: preferLegacyNumber(
+      currentStreamChunkTimeout,
+      legacyGrokCfg.stream_chunk_timeout,
+      defaultStreamChunkTimeout,
+    ),
+    stream_total_timeout: preferLegacyNumber(
+      currentStreamTotalTimeout,
+      legacyGrokCfg.stream_total_timeout,
+      defaultStreamTotalTimeout,
+    ),
+    retry_status_codes: preferLegacyNumberArray(
+      currentRetryStatusCodes,
+      legacyGrokCfg.retry_status_codes,
+      defaultRetryStatusCodes,
+    ),
+    image_generation_method: preferLegacyString(
+      DEFAULTS.grok.image_generation_method,
+      legacyGrokCfg.image_generation_method,
+      DEFAULTS.grok.image_generation_method,
+    ),
   };
 
   const mergedGrok = {
