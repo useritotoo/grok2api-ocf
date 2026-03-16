@@ -73,6 +73,7 @@
     "tokenManage": "Token Mgmt",
     "configManage": "Config Mgmt",
     "cacheManage": "Cache Mgmt",
+    "datacenter": "Data Center",
     "chat": "Chat",
     "imagine": "Imagine Gallery",
     "video": "Video Generation",
