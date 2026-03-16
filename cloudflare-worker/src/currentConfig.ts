@@ -153,14 +153,41 @@ async function ensureCurrentConfigSchema(env: Env): Promise<void> {
 
 export async function getCurrentConfig(env: Env): Promise<CurrentConfig> {
   await ensureCurrentConfigSchema(env);
+  const placeholders = CONFIG_KEYS.map(() => "?").join(",");
+  const rows = await env.DB.prepare(`SELECT key, value FROM settings WHERE key IN (${placeholders})`)
+    .bind(...CONFIG_KEYS)
+    .all<{ key: string; value: string }>();
+  const results = rows.results ?? [];
+  const hasNamedRows = results.some((row) => typeof row?.key === "string");
+
   const result = {} as CurrentConfig;
+  if (hasNamedRows) {
+    const rowMap = new Map<string, string>();
+    for (const row of results) {
+      if (typeof row?.key !== "string") continue;
+      rowMap.set(row.key, row.value);
+    }
+    for (const key of CONFIG_KEYS) {
+      result[key] = parseSection(rowMap.get(key), DEFAULT_CURRENT_CONFIG[key]);
+    }
+    return result;
+  }
+
   for (const key of CONFIG_KEYS) {
-    const row = await env.DB.prepare("SELECT value FROM settings WHERE key = ?")
-      .bind(key)
-      .first<{ value: string }>();
-    result[key] = parseSection(row?.value, DEFAULT_CURRENT_CONFIG[key]);
+    result[key] = await getCurrentConfigSection(env, key);
   }
   return result;
+}
+
+export async function getCurrentConfigSection<K extends keyof CurrentConfig>(
+  env: Env,
+  key: K,
+): Promise<CurrentConfig[K]> {
+  await ensureCurrentConfigSchema(env);
+  const row = await env.DB.prepare("SELECT value FROM settings WHERE key = ?")
+    .bind(key)
+    .first<{ value: string }>();
+  return parseSection(row?.value, DEFAULT_CURRENT_CONFIG[key]) as CurrentConfig[K];
 }
 
 export async function updateCurrentConfig(

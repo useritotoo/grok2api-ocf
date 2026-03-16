@@ -1,7 +1,7 @@
 import type { MiddlewareHandler } from "hono";
 import type { Env } from "./env";
 import { dbFirst } from "./db";
-import { DEFAULT_CURRENT_CONFIG, getCurrentConfig, normalizeApiKeyList } from "./currentConfig";
+import { DEFAULT_CURRENT_CONFIG, getCurrentConfigSection, normalizeApiKeyList } from "./currentConfig";
 import { validateApiKey } from "./repo/apiKeys";
 import { verifyAdminSession } from "./repo/adminSessions";
 
@@ -36,10 +36,10 @@ function authError(message: string, code: string): Record<string, unknown> {
 
 async function getAuthConfig(env: Env) {
   try {
-    return await getCurrentConfig(env);
+    return await getCurrentConfigSection(env, "app");
   } catch (error) {
-    console.error("Failed to load current config for auth, falling back to defaults:", error);
-    return DEFAULT_CURRENT_CONFIG;
+    console.error("Failed to load app config for auth, falling back to defaults:", error);
+    return DEFAULT_CURRENT_CONFIG.app;
   }
 }
 
@@ -54,9 +54,16 @@ async function countActiveApiKeys(env: Env): Promise<number> {
 }
 
 async function resolveApiAuthInfo(env: Env, token: string): Promise<ApiAuthInfo | null> {
-  const current = await getAuthConfig(env);
-  const globalKeys = normalizeApiKeyList(current.app.api_key);
-  const adminKey = String(current.app.app_key ?? "").trim();
+  return resolveApiAuthInfoWithConfig(await getAuthConfig(env), env, token);
+}
+
+async function resolveApiAuthInfoWithConfig(
+  current: Record<string, unknown>,
+  env: Env,
+  token: string,
+): Promise<ApiAuthInfo | null> {
+  const globalKeys = normalizeApiKeyList(current.api_key);
+  const adminKey = String(current.app_key ?? "").trim();
 
   if (adminKey && token === adminKey) {
     return { key: token, name: "Admin Key", is_admin: true };
@@ -78,7 +85,7 @@ export const requireApiAuth: MiddlewareHandler<{ Bindings: Env; Variables: { api
 ) => {
   const token = bearerToken(c.req.header("Authorization") ?? null);
   const current = await getAuthConfig(c.env);
-  const globalKeys = normalizeApiKeyList(current.app.api_key);
+  const globalKeys = normalizeApiKeyList(current.api_key);
 
   if (!token) {
     if (!globalKeys.length) {
@@ -90,7 +97,7 @@ export const requireApiAuth: MiddlewareHandler<{ Bindings: Env; Variables: { api
     return c.json(authError("Missing bearer token", "missing_token"), 401);
   }
 
-  const authInfo = await resolveApiAuthInfo(c.env, token);
+  const authInfo = await resolveApiAuthInfoWithConfig(current, c.env, token);
   if (authInfo) {
     c.set("apiAuth", authInfo);
     return next();
@@ -104,16 +111,16 @@ export const requireModelAuth: MiddlewareHandler<{ Bindings: Env; Variables: { a
   next,
 ) => {
   const token = bearerToken(c.req.header("Authorization") ?? null);
+  const current = await getAuthConfig(c.env);
 
   if (!token) {
-    const current = await getAuthConfig(c.env);
-    const globalKeys = normalizeApiKeyList(current.app.api_key);
+    const globalKeys = normalizeApiKeyList(current.api_key);
     if (!globalKeys.length && (await countActiveApiKeys(c.env)) === 0) {
       c.set("apiAuth", { key: null, name: "Anonymous", is_admin: false });
       return next();
     }
 
-    const functionAccess = await verifyFunctionAccess(c.env, null);
+    const functionAccess = verifyFunctionAccessWithConfig(current, null);
     if (functionAccess.ok) {
       c.set("apiAuth", { key: null, name: "Function Access", is_admin: false });
       return next();
@@ -122,13 +129,13 @@ export const requireModelAuth: MiddlewareHandler<{ Bindings: Env; Variables: { a
     return c.json(authError("Missing bearer token", "missing_token"), 401);
   }
 
-  const authInfo = await resolveApiAuthInfo(c.env, token);
+  const authInfo = await resolveApiAuthInfoWithConfig(current, c.env, token);
   if (authInfo) {
     c.set("apiAuth", authInfo);
     return next();
   }
 
-  const functionAccess = await verifyFunctionAccess(c.env, token);
+  const functionAccess = verifyFunctionAccessWithConfig(current, token);
   if (functionAccess.ok) {
     c.set("apiAuth", { key: null, name: "Function Key", is_admin: false });
     return next();
@@ -142,7 +149,7 @@ export const requireAdminAuth: MiddlewareHandler<{ Bindings: Env }> = async (c, 
   if (!token) return c.json({ error: "Missing admin credential", code: "MISSING_SESSION" }, 401);
 
   const current = await getAuthConfig(c.env);
-  const adminPassword = String(current.app.app_key ?? "").trim();
+  const adminPassword = String(current.app_key ?? "").trim();
   if (adminPassword && token === adminPassword) {
     return next();
   }
@@ -155,26 +162,32 @@ export const requireAdminAuth: MiddlewareHandler<{ Bindings: Env }> = async (c, 
 export async function isAdminAuthorized(env: Env, token: string | null): Promise<boolean> {
   if (!token) return false;
   const current = await getAuthConfig(env);
-  const adminPassword = String(current.app.app_key ?? "").trim();
+  const adminPassword = String(current.app_key ?? "").trim();
   if (adminPassword && token === adminPassword) return true;
   return verifyAdminSession(env.DB, token);
 }
 
 export async function getInternalMasterToken(env: Env): Promise<string> {
   const current = await getAuthConfig(env);
-  const adminPassword = String(current.app.app_key ?? "").trim();
+  const adminPassword = String(current.app_key ?? "").trim();
   if (adminPassword) return adminPassword;
-  return normalizeApiKeyList(current.app.api_key)[0] ?? "";
+  return normalizeApiKeyList(current.api_key)[0] ?? "";
 }
 
 export async function verifyFunctionAccess(
   env: Env,
   token: string | null,
 ): Promise<{ ok: true } | { ok: false; message: string; code: string }> {
-  const current = await getAuthConfig(env);
-  const functionKey = String(current.app.function_key ?? "").trim();
-  const functionEnabled = Boolean(current.app.function_enabled);
-  const adminPassword = String(current.app.app_key ?? "").trim();
+  return verifyFunctionAccessWithConfig(await getAuthConfig(env), token);
+}
+
+function verifyFunctionAccessWithConfig(
+  current: Record<string, unknown>,
+  token: string | null,
+): { ok: true } | { ok: false; message: string; code: string } {
+  const functionKey = String(current.function_key ?? "").trim();
+  const functionEnabled = Boolean(current.function_enabled);
+  const adminPassword = String(current.app_key ?? "").trim();
 
   if (!functionKey) {
     if (functionEnabled) return { ok: true };

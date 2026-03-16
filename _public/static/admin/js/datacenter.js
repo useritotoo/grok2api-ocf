@@ -182,7 +182,7 @@ async function fetchJson(url) {
 
   const payload = await response.json().catch(() => null);
   if (!response.ok) {
-    const detail = payload && (payload.detail || payload.message);
+    const detail = payload && (payload.detail || payload.message || payload.error);
     throw new Error(detail || `HTTP ${response.status}`);
   }
   return payload;
@@ -235,7 +235,7 @@ function renderMetrics(data) {
 
 async function refreshMetrics(silent) {
   try {
-    const data = await fetchJson("/v1/admin/metrics");
+    const data = await fetchJson("/api/v1/admin/metrics");
     if (!data) {
       return;
     }
@@ -255,7 +255,7 @@ async function loadLogFiles() {
 
   const previousValue = select.value;
   try {
-    const data = await fetchJson("/v1/admin/logs/files");
+    const data = await fetchJson("/api/v1/admin/logs/files");
     if (!data) {
       return;
     }
@@ -311,7 +311,7 @@ async function refreshLogs(silent) {
     }
     params.set("lines", String(lines));
 
-    const data = await fetchJson(`/v1/admin/logs/tail?${params.toString()}`);
+    const data = await fetchJson(`/api/v1/admin/logs/tail?${params.toString()}`);
     if (!data) {
       return;
     }

@@ -1,7 +1,11 @@
 import { Hono } from "hono";
 import { requireApiAuth, requireModelAuth } from "../auth";
 import type { Env } from "../env";
-import { openAiRoutes } from "./openai";
+import {
+  createModelDetailResponse,
+  createModelListResponse,
+  handleChatCompletionsRequest,
+} from "./openai";
 
 function normalizeResponseInput(input: unknown): Array<Record<string, unknown>> {
   if (typeof input === "string") {
@@ -153,38 +157,23 @@ async function forwardChatRequest(c: any, body: Record<string, unknown>): Promis
   if (auth) headers.set("Authorization", auth);
   headers.set("content-type", "application/json");
 
-  const request = new Request("https://internal.grok2api.local/chat/completions", {
+  const request = new Request(new URL("/v1/chat/completions", c.req.url).toString(), {
     method: "POST",
     headers,
     body: JSON.stringify(body),
   });
-  return openAiRoutes.fetch(request, c.env, c.executionCtx);
+  return handleChatCompletionsRequest({
+    request,
+    env: c.env,
+    apiAuth: c.get("apiAuth"),
+  });
 }
 
 export const currentOpenAiRoutes = new Hono<{ Bindings: Env }>();
 
-currentOpenAiRoutes.get("/models", requireModelAuth, (c) => {
-  const headers = new Headers();
-  const auth = c.req.header("Authorization");
-  if (auth) headers.set("Authorization", auth);
-  return openAiRoutes.fetch(
-    new Request("https://internal.grok2api.local/models", { headers }),
-    c.env,
-    c.executionCtx,
-  );
-});
+currentOpenAiRoutes.get("/models", requireModelAuth, () => createModelListResponse());
 
-currentOpenAiRoutes.get("/models/:modelId", requireModelAuth, (c) => {
-  const headers = new Headers();
-  const auth = c.req.header("Authorization");
-  if (auth) headers.set("Authorization", auth);
-  const modelId = encodeURIComponent(c.req.param("modelId"));
-  return openAiRoutes.fetch(
-    new Request(`https://internal.grok2api.local/models/${modelId}`, { headers }),
-    c.env,
-    c.executionCtx,
-  );
-});
+currentOpenAiRoutes.get("/models/:modelId", requireModelAuth, (c) => createModelDetailResponse(c.req.param("modelId")));
 
 currentOpenAiRoutes.use("/*", requireApiAuth);
 

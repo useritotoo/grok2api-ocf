@@ -121,18 +121,45 @@ function buildModelPayload(id: string) {
   };
 }
 
-openAiRoutes.get("/models", requireModelAuth, async (c) => {
-  const data = Object.keys(MODEL_CONFIG).map((id) => buildModelPayload(id));
-  return c.json({ object: "list", data });
-});
+export interface OpenAiHandlerArgs {
+  request: Request;
+  env: Env;
+  apiAuth: ApiAuthInfo;
+}
 
-openAiRoutes.get("/models/:modelId", requireModelAuth, async (c) => {
-  const modelId = c.req.param("modelId");
+function createOpenAiHandlerContext(args: OpenAiHandlerArgs) {
+  return {
+    env: args.env,
+    req: {
+      raw: args.request,
+      url: args.request.url,
+      json: () => args.request.json(),
+      formData: () => args.request.formData(),
+    },
+    get(_key: "apiAuth") {
+      return args.apiAuth;
+    },
+    json(payload: unknown, status = 200) {
+      return Response.json(payload, { status });
+    },
+  };
+}
+
+export function createModelListResponse(): Response {
+  const data = Object.keys(MODEL_CONFIG).map((id) => buildModelPayload(id));
+  return Response.json({ object: "list", data });
+}
+
+export function createModelDetailResponse(modelId: string): Response {
   if (!isValidModel(modelId)) {
-    return c.json(openAiError(`Model '${modelId}' not found`, "model_not_found"), 404);
+    return Response.json(openAiError(`Model '${modelId}' not found`, "model_not_found"), { status: 404 });
   }
-  return c.json(buildModelPayload(modelId));
-});
+  return Response.json(buildModelPayload(modelId));
+}
+
+openAiRoutes.get("/models", requireModelAuth, async () => createModelListResponse());
+
+openAiRoutes.get("/models/:modelId", requireModelAuth, async (c) => createModelDetailResponse(c.req.param("modelId")));
 
 openAiRoutes.use("/*", requireApiAuth);
 
@@ -1221,7 +1248,8 @@ openAiRoutes.get("/images/method", async (c) => {
   return c.json({ image_generation_method: imageGenerationMethod(settingsBundle) });
 });
 
-openAiRoutes.post("/chat/completions", async (c) => {
+export async function handleChatCompletionsRequest(args: OpenAiHandlerArgs): Promise<Response> {
+  const c = createOpenAiHandlerContext(args);
   const start = Date.now();
   const ip = getClientIp(c.req.raw);
   const keyName = c.get("apiAuth").name ?? "Unknown";
@@ -1556,9 +1584,14 @@ openAiRoutes.post("/chat/completions", async (c) => {
     });
     return c.json(openAiError("Internal error", "internal_error"), 500);
   }
-});
+}
 
-openAiRoutes.post("/images/generations", async (c) => {
+openAiRoutes.post("/chat/completions", async (c) =>
+  handleChatCompletionsRequest({ request: c.req.raw, env: c.env, apiAuth: c.get("apiAuth") }),
+);
+
+export async function handleImageGenerationsRequest(args: OpenAiHandlerArgs): Promise<Response> {
+  const c = createOpenAiHandlerContext(args);
   const start = Date.now();
   const ip = getClientIp(c.req.raw);
   const keyName = c.get("apiAuth").name ?? "Unknown";
@@ -1834,9 +1867,14 @@ openAiRoutes.post("/images/generations", async (c) => {
     });
     return c.json(openAiError(message || "Internal error", "internal_error"), 500);
   }
-});
+}
 
-openAiRoutes.post("/images/edits", async (c) => {
+openAiRoutes.post("/images/generations", async (c) =>
+  handleImageGenerationsRequest({ request: c.req.raw, env: c.env, apiAuth: c.get("apiAuth") }),
+);
+
+export async function handleImageEditsRequest(args: OpenAiHandlerArgs): Promise<Response> {
+  const c = createOpenAiHandlerContext(args);
   const start = Date.now();
   const ip = getClientIp(c.req.raw);
   const keyName = c.get("apiAuth").name ?? "Unknown";
@@ -2124,9 +2162,14 @@ openAiRoutes.post("/images/edits", async (c) => {
     });
     return c.json(openAiError(message || "Internal error", "internal_error"), 500);
   }
-});
+}
 
-openAiRoutes.post("/uploads/image", async (c) => {
+openAiRoutes.post("/images/edits", async (c) =>
+  handleImageEditsRequest({ request: c.req.raw, env: c.env, apiAuth: c.get("apiAuth") }),
+);
+
+export async function handleUploadImageRequest(args: OpenAiHandlerArgs): Promise<Response> {
+  const c = createOpenAiHandlerContext(args);
   try {
     const form = await c.req.formData();
     const file = form.get("file");
@@ -2180,6 +2223,10 @@ openAiRoutes.post("/uploads/image", async (c) => {
   } catch (e) {
     return c.json(openAiError(e instanceof Error ? e.message : "Internal error", "internal_error"), 500);
   }
-});
+}
+
+openAiRoutes.post("/uploads/image", async (c) =>
+  handleUploadImageRequest({ request: c.req.raw, env: c.env, apiAuth: c.get("apiAuth") }),
+);
 
 openAiRoutes.options("/*", (c) => c.body(null, 204));

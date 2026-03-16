@@ -117,6 +117,12 @@ app.get("/manage", (c) => {
 });
 
 app.get("/admin", (c) => c.redirect("/admin/login", 302));
+app.get("/admin/datacenter", (c) => {
+  const buildSha = getBuildSha(c.env as Env);
+  const v = c.req.query("v") ?? "";
+  const target = `/admin/pages/datacenter?v=${encodeURIComponent(v || buildSha)}`;
+  return c.redirect(target, 302);
+});
 
 for (const pathname of [
   "/login",
@@ -125,6 +131,7 @@ for (const pathname of [
   "/video",
   "/voice",
   "/admin/login",
+  "/admin/pages/datacenter",
   "/admin/token",
   "/admin/config",
   "/admin/cache",
@@ -161,19 +168,8 @@ app.get("/health", (c) =>
 );
 
 app.notFound(async (c) => {
-  const assets = getAssets(c.env as any);
   const buildSha = getBuildSha(c.env as Env);
-  if (!assets) return withResponseHeaders(c.text("Not Found", 404), { "x-grok2api-build": buildSha });
-  try {
-    const res = await assets.fetch(c.req.raw);
-    return withResponseHeaders(res, { "x-grok2api-build": buildSha });
-  } catch (err) {
-    console.error("ASSETS fetch failed (notFound):", err);
-    const detail = isDebugRequest(c) ? `
-
-${err instanceof Error ? err.stack || err.message : String(err)}` : "";
-    return withResponseHeaders(c.text(`Internal Server Error${detail}`, 500), { "x-grok2api-build": buildSha });
-  }
+  return withResponseHeaders(c.text("Not Found", 404), { "x-grok2api-build": buildSha });
 });
 
 const handler: ExportedHandler<Env> = {

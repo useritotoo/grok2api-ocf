@@ -14,10 +14,15 @@ import {
   PROMPT_ENHANCE_MODEL,
 } from "../function/promptEnhance";
 import {
-  getInternalMasterToken,
   requireFunctionAuth,
+  type ApiAuthInfo,
 } from "../auth";
-import { openAiRoutes } from "./openai";
+import {
+  handleChatCompletionsRequest,
+  handleImageEditsRequest,
+  handleImageGenerationsRequest,
+  handleUploadImageRequest,
+} from "./openai";
 import {
   deleteFunctionSessions,
   getFunctionSession,
@@ -62,6 +67,11 @@ interface PromptEnhanceRequestPayload {
 }
 
 const promptEnhanceControllers = new Map<string, AbortController>();
+const INTERNAL_FUNCTION_API_AUTH: ApiAuthInfo = {
+  key: null,
+  name: "Internal Function",
+  is_admin: true,
+};
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -429,12 +439,7 @@ async function buildInternalRequest(
   init: RequestInit,
 ): Promise<Request> {
   const url = new URL(buildInternalRequestUrl(c.req.url, pathname));
-  const headers = new Headers(init.headers);
-  const masterToken = await getInternalMasterToken(c.env);
-  if (masterToken) {
-    headers.set("Authorization", `Bearer ${masterToken}`);
-  }
-  return new Request(url.toString(), { ...init, headers });
+  return new Request(url.toString(), { ...init, headers: new Headers(init.headers) });
 }
 
 async function runPromptEnhanceRequest(
@@ -448,7 +453,11 @@ async function runPromptEnhanceRequest(
     body: JSON.stringify(buildPromptEnhanceChatBody(payload.prompt, payload.temperature)),
     signal,
   });
-  return openAiRoutes.fetch(request, c.env, c.executionCtx);
+  return handleChatCompletionsRequest({
+    request,
+    env: c.env,
+    apiAuth: INTERNAL_FUNCTION_API_AUTH,
+  });
 }
 
 interface ImagineImageResultItem {
@@ -597,7 +606,17 @@ async function runImagineBatch(
         body: JSON.stringify(buildImagineGenerationBody(payload)),
       });
 
-  const response = await openAiRoutes.fetch(request, c.env, c.executionCtx);
+  const response = target.path === "/images/edits"
+    ? await handleImageEditsRequest({
+        request,
+        env: c.env,
+        apiAuth: INTERNAL_FUNCTION_API_AUTH,
+      })
+    : await handleImageGenerationsRequest({
+        request,
+        env: c.env,
+        apiAuth: INTERNAL_FUNCTION_API_AUTH,
+      });
   const bodyText = await response.text();
   let parsed: Record<string, unknown> | null = null;
   if (bodyText) {
@@ -898,12 +917,11 @@ export const functionRoutes = new Hono<{ Bindings: Env }>();
 functionRoutes.use("/v1/function/*", requireFunctionAuth);
 
 functionRoutes.post("/v1/function/uploads/image", async (c) => {
-  const form = await c.req.formData();
-  const request = await buildInternalRequest(c, "/uploads/image", {
-    method: "POST",
-    body: form,
+  return handleUploadImageRequest({
+    request: c.req.raw,
+    env: c.env,
+    apiAuth: INTERNAL_FUNCTION_API_AUTH,
   });
-  return openAiRoutes.fetch(request, c.env, c.executionCtx);
 });
 
 functionRoutes.get("/v1/function/verify", () => {
@@ -911,15 +929,11 @@ functionRoutes.get("/v1/function/verify", () => {
 });
 
 functionRoutes.post("/v1/function/chat/completions", async (c) => {
-  const body = await c.req.text();
-  const request = await buildInternalRequest(c, "/chat/completions", {
-    method: "POST",
-    headers: {
-      "content-type": c.req.header("content-type") ?? "application/json",
-    },
-    body,
+  return handleChatCompletionsRequest({
+    request: c.req.raw,
+    env: c.env,
+    apiAuth: INTERNAL_FUNCTION_API_AUTH,
   });
-  return openAiRoutes.fetch(request, c.env, c.executionCtx);
 });
 
 functionRoutes.post("/v1/function/prompt/enhance", async (c) => {
@@ -1370,7 +1384,11 @@ functionRoutes.get("/v1/function/video/sse", async (c) => {
     body: JSON.stringify(buildVideoChatBody(session.payload)),
   });
 
-  const response = await openAiRoutes.fetch(request, c.env, c.executionCtx);
+  const response = await handleChatCompletionsRequest({
+    request,
+    env: c.env,
+    apiAuth: INTERNAL_FUNCTION_API_AUTH,
+  });
   c.executionCtx.waitUntil(deleteFunctionSessions(c.env.DB, [taskId], "video").then(() => undefined));
   return response;
 });

@@ -87,3 +87,69 @@ test("allows /v1/models to be loaded with the function key", async () => {
   assert.equal(payload.object, "list");
   assert.ok(payload.data.some((item) => item.id === "grok-4"));
 });
+
+test("loads /v1/models without querying non-app current config sections or double-running auth", async () => {
+  let appConfigReads = 0;
+
+  const response = await (worker.fetch as any)(
+    new Request("https://example.com/v1/models", {
+      headers: { Authorization: "Bearer function-secret" },
+    }),
+    {
+      DB: {
+        prepare(sql: string) {
+          let params: unknown[] = [];
+          return {
+            bind(...bound: unknown[]) {
+              params = bound;
+              return this;
+            },
+            first<T>() {
+              if (sql === "SELECT value FROM settings WHERE key = ?") {
+                const key = String(params[0] ?? "");
+                if (key !== "app") {
+                  throw new Error(`unexpected config section lookup: ${key}`);
+                }
+                appConfigReads += 1;
+                return Promise.resolve(({
+                  value: JSON.stringify({
+                    app_key: "admin",
+                    api_key: "",
+                    function_enabled: true,
+                    function_key: "function-secret",
+                    image_format: "url",
+                    video_format: "html",
+                  }),
+                } as unknown) as T);
+              }
+              if (sql === "SELECT key, name, is_active FROM api_keys WHERE key = ?") {
+                return Promise.resolve(null);
+              }
+              if (sql === "SELECT COUNT(1) as c FROM api_keys WHERE is_active = 1") {
+                return Promise.resolve(({ c: 0 } as unknown) as T);
+              }
+              return Promise.resolve(null);
+            },
+            all<T>() {
+              return Promise.resolve({ results: [] as T[] });
+            },
+            run() {
+              return Promise.resolve({ success: true });
+            },
+          };
+        },
+        batch() {
+          return Promise.resolve([]);
+        },
+      } as any,
+      BUILD_SHA: "dev",
+      CACHE_RESET_TZ_OFFSET_MINUTES: "480",
+      KV_CACHE_MAX_BYTES: "26214400",
+      KV_CLEANUP_BATCH: "200",
+    } as any,
+    createExecutionContext(),
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal(appConfigReads, 1);
+});

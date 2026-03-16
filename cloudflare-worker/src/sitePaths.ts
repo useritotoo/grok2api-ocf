@@ -5,6 +5,7 @@ const STATIC_PAGE_MAP: Record<string, string> = {
   "/video": "/function/pages/video.html",
   "/voice": "/function/pages/voice.html",
   "/admin/login": "/admin/pages/login.html",
+  "/admin/pages/datacenter": "/admin/pages/datacenter.html",
   "/admin/token": "/admin/pages/token.html",
   "/admin/config": "/admin/pages/config.html",
   "/admin/cache": "/admin/pages/cache.html",

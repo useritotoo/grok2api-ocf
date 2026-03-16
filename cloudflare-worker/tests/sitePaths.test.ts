@@ -10,6 +10,7 @@ test("maps current public pages to worker asset paths", () => {
   assert.equal(getStaticPagePath("/login"), "/function/pages/login.html");
   assert.equal(getStaticPagePath("/chat"), "/function/pages/chat.html");
   assert.equal(getStaticPagePath("/admin/token"), "/admin/pages/token.html");
+  assert.equal(getStaticPagePath("/admin/pages/datacenter"), "/admin/pages/datacenter.html");
 });
 
 test("omits legacy pages that no longer exist in the current repo", () => {
