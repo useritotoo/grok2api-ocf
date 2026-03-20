@@ -205,6 +205,17 @@ function poolToTokenType(pool: string): "sso" | "ssoSuper" | null {
   return null;
 }
 
+async function getConsumedModeEnabled(db: Env["DB"]): Promise<boolean> {
+  try {
+    const row = await dbFirst<{ value: string }>(db, "SELECT value FROM settings WHERE key = ?", ["token"]);
+    if (!row?.value) return false;
+    const parsed = JSON.parse(row.value) as Record<string, unknown>;
+    return Boolean(parsed?.consumed_mode_enabled);
+  } catch {
+    return false;
+  }
+}
+
 async function getKvStats(db: Env["DB"]): Promise<{
   image: { count: number; size_bytes: number; size_mb: number };
   video: { count: number; size_bytes: number; size_mb: number };
@@ -969,6 +980,7 @@ adminRoutes.get("/api/v1/admin/tokens", requireAdminAuth, async (c) => {
   try {
     const rows = await listTokens(c.env.DB);
     const now = nowMs();
+    const consumedModeEnabled = await getConsumedModeEnabled(c.env.DB);
 
     const out: Record<"ssoBasic" | "ssoSuper", any[]> = { ssoBasic: [], ssoSuper: [] };
     for (const r of rows) {
@@ -991,10 +1003,11 @@ adminRoutes.get("/api/v1/admin/tokens", requireAdminAuth, async (c) => {
         note: r.note ?? "",
         fail_count: r.failed_count ?? 0,
         use_count: 0,
+        consumed: Number.isFinite(Number(r.consumed)) ? Math.max(0, Math.floor(Number(r.consumed))) : 0,
         last_asset_clear_at: r.last_asset_clear_at ?? null,
       });
     }
-    return c.json(out);
+    return c.json({ tokens: out, consumed_mode_enabled: consumedModeEnabled });
   } catch (e) {
     return c.json(legacyErr(`Get tokens failed: ${e instanceof Error ? e.message : String(e)}`), 500);
   }
@@ -1004,6 +1017,9 @@ adminRoutes.post("/api/v1/admin/tokens", requireAdminAuth, async (c) => {
   try {
     const body = (await c.req.json()) as Record<string, unknown>;
     if (!body || typeof body !== "object") return c.json(legacyErr("Invalid payload"), 400);
+    const payload = body.tokens && typeof body.tokens === "object"
+      ? (body.tokens as Record<string, unknown>)
+      : body;
 
     const rows = await listTokens(c.env.DB);
     const byType: Record<"sso" | "ssoSuper", Set<string>> = { sso: new Set(), ssoSuper: new Set() };
@@ -1015,7 +1031,7 @@ adminRoutes.post("/api/v1/admin/tokens", requireAdminAuth, async (c) => {
     const desiredByType: Record<"sso" | "ssoSuper", Set<string>> = { sso: new Set(), ssoSuper: new Set() };
     const stmts: D1PreparedStatement[] = [];
 
-    for (const [pool, items] of Object.entries(body)) {
+    for (const [pool, items] of Object.entries(payload)) {
       const tokenType = poolToTokenType(pool);
       if (!tokenType) continue;
       const arr = Array.isArray(items) ? items : [];
@@ -1037,6 +1053,8 @@ adminRoutes.post("/api/v1/admin/tokens", requireAdminAuth, async (c) => {
             ? -1
             : Number((it as any)?.heavy_quota ?? (tokenType === "ssoSuper" ? quota : -1));
         const heavyQuota = Number.isFinite(heavyQuotaRaw) && heavyQuotaRaw >= 0 ? Math.floor(heavyQuotaRaw) : -1;
+        const consumedRaw = typeof it === "string" ? 0 : Number((it as any)?.consumed ?? 0);
+        const consumed = Number.isFinite(consumedRaw) && consumedRaw >= 0 ? Math.floor(consumedRaw) : 0;
         const note = typeof it === "string" ? "" : String((it as any)?.note ?? "");
 
         const status = statusRaw === "invalid" ? "expired" : "active";
@@ -1047,8 +1065,8 @@ adminRoutes.post("/api/v1/admin/tokens", requireAdminAuth, async (c) => {
 
         stmts.push(
           c.env.DB.prepare(
-            "INSERT INTO tokens(token, token_type, created_time, remaining_queries, heavy_remaining_queries, status, failed_count, cooldown_until, last_failure_time, last_failure_reason, tags, note) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(token) DO UPDATE SET token_type=excluded.token_type, remaining_queries=excluded.remaining_queries, heavy_remaining_queries=excluded.heavy_remaining_queries, status=excluded.status, cooldown_until=excluded.cooldown_until, note=excluded.note",
-          ).bind(token, tokenType, now, remaining, heavy, status, 0, cooldownUntil, null, null, "[]", note),
+            "INSERT INTO tokens(token, token_type, created_time, remaining_queries, heavy_remaining_queries, consumed, status, failed_count, cooldown_until, last_failure_time, last_failure_reason, tags, note) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(token) DO UPDATE SET token_type=excluded.token_type, remaining_queries=excluded.remaining_queries, heavy_remaining_queries=excluded.heavy_remaining_queries, consumed=excluded.consumed, status=excluded.status, cooldown_until=excluded.cooldown_until, note=excluded.note",
+          ).bind(token, tokenType, now, remaining, heavy, consumed, status, 0, cooldownUntil, null, null, "[]", note),
         );
       }
     }

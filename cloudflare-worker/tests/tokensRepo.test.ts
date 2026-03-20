@@ -42,7 +42,7 @@ function createTokenDb(initial?: Partial<{ failed_count: number; status: string;
             state.last_failure_reason = String(params[1] ?? "");
           } else if (sql === "UPDATE tokens SET status = 'expired' WHERE token = ?") {
             state.status = "expired";
-          } else if (sql === "UPDATE tokens SET cooldown_until = ? WHERE token = ?") {
+          } else if (sql.startsWith("UPDATE tokens SET cooldown_until = ?")) {
             state.cooldown_until = Number(params[0] ?? 0);
           }
           return Promise.resolve({ success: true });
@@ -63,17 +63,22 @@ function createSelectionDb(
     token_type: "sso" | "ssoSuper";
     remaining_queries?: number;
     heavy_remaining_queries?: number;
+    consumed?: number;
     status?: string;
     failed_count?: number;
     cooldown_until?: number | null;
     created_time?: number;
   }>,
+  options?: {
+    consumed_mode_enabled?: boolean;
+  },
 ) {
   const normalized = rows.map((row, index) => ({
     token: row.token,
     token_type: row.token_type,
     remaining_queries: row.remaining_queries ?? -1,
     heavy_remaining_queries: row.heavy_remaining_queries ?? -1,
+    consumed: row.consumed ?? 0,
     status: row.status ?? "active",
     failed_count: row.failed_count ?? 0,
     cooldown_until: row.cooldown_until ?? null,
@@ -89,18 +94,38 @@ function createSelectionDb(
           return this;
         },
         first<T>() {
+          if (sql === "SELECT value FROM settings WHERE key = ?") {
+            const key = String(params[0] ?? "");
+            if (key === "token") {
+              return Promise.resolve(
+                ({
+                  value: JSON.stringify({
+                    consumed_mode_enabled: Boolean(options?.consumed_mode_enabled),
+                  }),
+                } as unknown) as T,
+              );
+            }
+            return Promise.resolve(null);
+          }
           if (sql.includes("SELECT token FROM tokens")) {
             const tokenType = String(params[0] ?? "");
             const maxFailures = Number(params[1] ?? 0);
             const now = Number(params[2] ?? 0);
+            const consumedMode = sql.includes("ORDER BY consumed ASC");
             const field = sql.includes("heavy_remaining_queries") ? "heavy_remaining_queries" : "remaining_queries";
             const candidates = normalized
               .filter((row) => row.token_type === tokenType)
               .filter((row) => row.status !== "expired")
               .filter((row) => row.failed_count < maxFailures)
               .filter((row) => row.cooldown_until === null || row.cooldown_until <= now)
-              .filter((row) => Number(row[field]) !== 0)
+              .filter((row) => consumedMode || Number(row[field]) !== 0)
               .sort((a, b) => {
+                if (consumedMode) {
+                  if (Number(a.consumed) !== Number(b.consumed)) {
+                    return Number(a.consumed) - Number(b.consumed);
+                  }
+                  return Number(a.created_time) - Number(b.created_time);
+                }
                 const aUnlimited = Number(a[field]) === -1 ? 0 : 1;
                 const bUnlimited = Number(b[field]) === -1 ? 0 : 1;
                 if (aUnlimited !== bUnlimited) return aUnlimited - bUnlimited;
@@ -181,4 +206,32 @@ test("video 720p requests fall back to sso basic tokens when no super token is a
   } as any);
 
   assert.deepEqual(selected, { token: "basic-token", token_type: "sso" });
+});
+
+test("consumed mode prefers the least consumed active token even when quota is 0", async () => {
+  const db = createSelectionDb(
+    [
+      {
+        token: "least-consumed",
+        token_type: "sso",
+        remaining_queries: 0,
+        consumed: 0,
+        status: "active",
+        created_time: 1,
+      },
+      {
+        token: "more-consumed",
+        token_type: "sso",
+        remaining_queries: 80,
+        consumed: 5,
+        status: "active",
+        created_time: 2,
+      },
+    ],
+    { consumed_mode_enabled: true },
+  );
+
+  const selected = await selectBestToken(db as any, "grok-4");
+
+  assert.deepEqual(selected, { token: "least-consumed", token_type: "sso" });
 });

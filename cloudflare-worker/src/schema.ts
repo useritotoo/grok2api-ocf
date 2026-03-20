@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS tokens (
   created_time INTEGER NOT NULL,
   remaining_queries INTEGER NOT NULL DEFAULT -1,
   heavy_remaining_queries INTEGER NOT NULL DEFAULT -1,
+  consumed INTEGER NOT NULL DEFAULT 0,
   status TEXT NOT NULL DEFAULT 'active',
   failed_count INTEGER NOT NULL DEFAULT 0,
   cooldown_until INTEGER,
@@ -243,6 +244,9 @@ async function ensureTokenMetadataColumns(db: Env["DB"]): Promise<void> {
   const res = await db.prepare("PRAGMA table_info(tokens)").all<{ name: string }>();
   const columns = new Set((res.results ?? []).map((row) => String(row.name)));
 
+  if (!columns.has("consumed")) {
+    await db.prepare("ALTER TABLE tokens ADD COLUMN consumed INTEGER NOT NULL DEFAULT 0").run();
+  }
   if (!columns.has("last_asset_clear_at")) {
     await db.prepare("ALTER TABLE tokens ADD COLUMN last_asset_clear_at INTEGER").run();
   }

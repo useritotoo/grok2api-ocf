@@ -41,17 +41,23 @@
     return Number.isFinite(parsed) ? parsed : 0;
   }
 
+  function normalizeConsumed(value) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
   function normalizeTags(value) {
     return Array.isArray(value) ? value : [];
   }
 
   function normalizeTokenEntry(pool, entry, index, selectedTokenSet) {
     const normalized = typeof entry === "string"
-      ? { token: entry, status: "active", quota: 0, note: "", use_count: 0, tags: [] }
+      ? { token: entry, status: "active", quota: 0, consumed: 0, note: "", use_count: 0, tags: [] }
       : {
           token: entry && entry.token,
           status: entry && entry.status ? entry.status : "active",
           quota: entry && entry.quota,
+          consumed: entry && entry.consumed,
           note: entry && entry.note ? entry.note : "",
           fail_count: entry && entry.fail_count,
           use_count: entry && entry.use_count,
@@ -70,6 +76,7 @@
       token: token,
       status: normalized.status || "active",
       quota: normalizeQuota(normalized.quota),
+      consumed: normalizeConsumed(normalized.consumed),
       note: normalized.note || "",
       fail_count: normalizeCount(normalized.fail_count),
       use_count: normalizeCount(normalized.use_count),

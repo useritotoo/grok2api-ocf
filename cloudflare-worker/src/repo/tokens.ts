@@ -11,6 +11,7 @@ export interface TokenRow {
   created_time: number;
   remaining_queries: number;
   heavy_remaining_queries: number;
+  consumed: number;
   status: string;
   tags: string; // JSON string
   note: string;
@@ -25,6 +26,8 @@ const MAX_FAILURES = 3;
 const SHORT_COOLDOWN_SECONDS = 30;
 const RATE_LIMIT_COOLDOWN_SECONDS = 90;
 const AUTH_COOLDOWN_SECONDS = 60;
+const CONSUMED_MODE_CACHE_TTL_MS = 1000;
+const consumedModeCache = new WeakMap<Env["DB"], { value: boolean; expiresAt: number }>();
 
 function isTokenAuthFailure(status: number): boolean {
   return status === 401 || status === 403;
@@ -39,12 +42,53 @@ function parseTags(tagsJson: string): string[] {
   }
 }
 
+function normalizeConsumed(value: unknown): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return 0;
+  return Math.floor(parsed);
+}
+
+async function isConsumedModeEnabled(db: Env["DB"]): Promise<boolean> {
+  const now = Date.now();
+  const cached = consumedModeCache.get(db);
+  if (cached && cached.expiresAt > now) return cached.value;
+
+  let enabled = false;
+  try {
+    const row = await dbFirst<{ value: string }>(db, "SELECT value FROM settings WHERE key = ?", ["token"]);
+    if (row?.value) {
+      try {
+        const parsed = JSON.parse(row.value) as Record<string, unknown>;
+        enabled = Boolean(parsed?.consumed_mode_enabled);
+      } catch {
+        enabled = false;
+      }
+    }
+  } catch {
+    enabled = false;
+  }
+
+  consumedModeCache.set(db, { value: enabled, expiresAt: now + CONSUMED_MODE_CACHE_TTL_MS });
+  return enabled;
+}
+
+function getSelectionCost(model: string): number {
+  return model === "grok-4-heavy" ? 4 : 1;
+}
+
+async function incrementTokenConsumed(db: Env["DB"], token: string, amount: number): Promise<void> {
+  const safeAmount = Math.max(0, Math.floor(Number(amount) || 0));
+  if (!safeAmount) return;
+  await dbRun(db, "UPDATE tokens SET consumed = COALESCE(consumed, 0) + ? WHERE token = ?", [safeAmount, token]);
+}
+
 export function tokenRowToInfo(row: TokenRow): {
   token: string;
   token_type: TokenType;
   created_time: number;
   remaining_queries: number;
   heavy_remaining_queries: number;
+  consumed: number;
   status: string;
   tags: string[];
   note: string;
@@ -88,6 +132,7 @@ export function tokenRowToInfo(row: TokenRow): {
     created_time: row.created_time,
     remaining_queries: row.remaining_queries,
     heavy_remaining_queries: row.heavy_remaining_queries,
+    consumed: normalizeConsumed(row.consumed),
     status,
     tags: parseTags(row.tags),
     note: row.note ?? "",
@@ -103,7 +148,7 @@ export function tokenRowToInfo(row: TokenRow): {
 export async function listTokens(db: Env["DB"]): Promise<TokenRow[]> {
   return dbAll<TokenRow>(
     db,
-    "SELECT token, token_type, created_time, remaining_queries, heavy_remaining_queries, status, tags, note, cooldown_until, last_failure_time, last_failure_reason, failed_count, last_asset_clear_at FROM tokens ORDER BY created_time DESC",
+    "SELECT token, token_type, created_time, remaining_queries, heavy_remaining_queries, consumed, status, tags, note, cooldown_until, last_failure_time, last_failure_reason, failed_count, last_asset_clear_at FROM tokens ORDER BY created_time DESC",
   );
 }
 
@@ -119,7 +164,7 @@ export async function listTokensPage(
 ): Promise<TokenRow[]> {
   return dbAll<TokenRow>(
     db,
-    "SELECT token, token_type, created_time, remaining_queries, heavy_remaining_queries, status, tags, note, cooldown_until, last_failure_time, last_failure_reason, failed_count, last_asset_clear_at FROM tokens ORDER BY created_time DESC LIMIT ? OFFSET ?",
+    "SELECT token, token_type, created_time, remaining_queries, heavy_remaining_queries, consumed, status, tags, note, cooldown_until, last_failure_time, last_failure_reason, failed_count, last_asset_clear_at FROM tokens ORDER BY created_time DESC LIMIT ? OFFSET ?",
     [limit, offset],
   );
 }
@@ -132,7 +177,7 @@ export async function addTokens(db: Env["DB"], tokens: string[], token_type: Tok
   const stmts = cleaned.map((t) =>
     db
       .prepare(
-        "INSERT OR REPLACE INTO tokens(token, token_type, created_time, remaining_queries, heavy_remaining_queries, status, failed_count, cooldown_until, last_failure_time, last_failure_reason, tags, note) VALUES(?,?,?,?,?,'active',0,NULL,NULL,NULL,'[]','')",
+        "INSERT OR REPLACE INTO tokens(token, token_type, created_time, remaining_queries, heavy_remaining_queries, consumed, status, failed_count, cooldown_until, last_failure_time, last_failure_reason, tags, note) VALUES(?,?,?,?,?,0,'active',0,NULL,NULL,NULL,'[]','')",
       )
       .bind(t, token_type, now, -1, -1),
   );
@@ -185,11 +230,20 @@ export async function selectBestToken(
   const isVideo = model === "grok-imagine-1.0-video";
   const field = isHeavy ? "heavy_remaining_queries" : "remaining_queries";
   const preferSuperVideo = isVideo && requiresSuperVideoToken(options);
+  const consumedModeEnabled = await isConsumedModeEnabled(db);
 
   const pick = async (token_type: TokenType): Promise<{ token: string; token_type: TokenType } | null> => {
     const row = await dbFirst<{ token: string }>(
       db,
-      `SELECT token FROM tokens
+      consumedModeEnabled
+        ? `SELECT token FROM tokens
+       WHERE token_type = ?
+         AND status = 'active'
+         AND failed_count < ?
+         AND (cooldown_until IS NULL OR cooldown_until <= ?)
+       ORDER BY consumed ASC, created_time ASC
+       LIMIT 1`
+        : `SELECT token FROM tokens
        WHERE token_type = ?
          AND status != 'expired'
          AND failed_count < ?
@@ -199,7 +253,11 @@ export async function selectBestToken(
        LIMIT 1`,
       [token_type, MAX_FAILURES, now],
     );
-    return row ? { token: row.token, token_type } : null;
+    if (!row) return null;
+    if (consumedModeEnabled) {
+      await incrementTokenConsumed(db, row.token, getSelectionCost(model));
+    }
+    return { token: row.token, token_type };
   };
 
   if (isHeavy) return pick("ssoSuper");
@@ -258,7 +316,7 @@ export async function applyCooldown(
         ? AUTH_COOLDOWN_SECONDS
         : SHORT_COOLDOWN_SECONDS;
   const until = now + seconds * 1000;
-  await dbRun(db, "UPDATE tokens SET cooldown_until = ? WHERE token = ?", [until, token]);
+  await dbRun(db, "UPDATE tokens SET cooldown_until = ?, consumed = 0 WHERE token = ?", [until, token]);
 }
 
 export async function updateTokenLimits(

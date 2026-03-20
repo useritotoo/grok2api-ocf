@@ -55,3 +55,13 @@ test("getPaginationData reuses cached filter indices", () => {
     ["sso=two"],
   );
 });
+
+test("appendPoolTokens preserves consumed counters for old-compatible token payloads", () => {
+  const state = createState();
+
+  appendPoolTokens(state, "ssoBasic", [
+    { token: "sso=one", status: "active", quota: 80, consumed: 6, tags: [] },
+  ]);
+
+  assert.equal(state.flatTokens[0].consumed, 6);
+});

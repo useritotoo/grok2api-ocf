@@ -61,6 +61,7 @@ export const DEFAULT_CURRENT_CONFIG: CurrentConfig = {
     refresh_interval_hours: 8,
     super_refresh_interval_hours: 2,
     fail_threshold: 5,
+    consumed_mode_enabled: false,
     save_delay_ms: 500,
     usage_flush_interval_sec: 5,
     reload_interval_sec: 30,
@@ -91,6 +92,7 @@ export const DEFAULT_CURRENT_CONFIG: CurrentConfig = {
     response_format: "url",
   },
   video: {
+    enable_public_asset: false,
     concurrent: 100,
     timeout: 60,
     stream_timeout: 60,

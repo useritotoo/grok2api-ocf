@@ -1,4 +1,5 @@
 let apiKey = '';
+let consumedModeEnabled = false;
 let allTokens = {};
 let flatTokens = [];
 let tokenLookup = new Set();
@@ -75,6 +76,30 @@ function rebuildTokenPageState() {
 function setText(id, text) {
   const el = byId(id);
   if (el) el.innerText = text;
+}
+
+function updateQuotaHeader() {
+  const thQuota = byId('th-quota');
+  if (!thQuota) return;
+  const key = consumedModeEnabled ? 'token.tableQuotaConsumed' : 'token.tableQuota';
+  thQuota.dataset.i18n = key;
+  thQuota.textContent = t(key);
+}
+
+function updateQuotaLabels() {
+  const chatLabels = qsa('[data-i18n="token.statChatQuota"], [data-i18n="token.statChatConsumed"]');
+  const imageLabels = qsa('[data-i18n="token.statImageQuota"], [data-i18n="token.statImageConsumed"]');
+  const chatKey = consumedModeEnabled ? 'token.statChatConsumed' : 'token.statChatQuota';
+  const imageKey = consumedModeEnabled ? 'token.statImageConsumed' : 'token.statImageQuota';
+
+  chatLabels.forEach((label) => {
+    label.dataset.i18n = chatKey;
+    label.textContent = t(chatKey);
+  });
+  imageLabels.forEach((label) => {
+    label.dataset.i18n = imageKey;
+    label.textContent = t(imageKey);
+  });
 }
 
 function openModal(id) {
@@ -173,8 +198,11 @@ async function loadData() {
     });
     if (res.ok) {
       const data = await res.json();
-      allTokens = data;
-      await processTokens(data);
+      allTokens = data.tokens || {};
+      consumedModeEnabled = Boolean(data.consumed_mode_enabled);
+      updateQuotaHeader();
+      updateQuotaLabels();
+      await processTokens(allTokens);
       updateStats();
       renderTable();
     } else if (res.status === 401) {
@@ -216,14 +244,20 @@ async function processTokens(data) {
 function updateStats() {
   const stats = tokenPageState.stats || TokenPageState.createEmptyStats();
   const imageQuota = Math.floor(stats.chatQuota / 2);
+  const totalConsumed = flatTokens.reduce((sum, item) => sum + Number(item.consumed || 0), 0);
 
   setText('stat-total', stats.totalTokens.toLocaleString());
   setText('stat-active', stats.activeTokens.toLocaleString());
   setText('stat-cooling', stats.coolingTokens.toLocaleString());
   setText('stat-invalid', stats.invalidTokens.toLocaleString());
 
-  setText('stat-chat-quota', stats.chatQuota.toLocaleString());
-  setText('stat-image-quota', imageQuota.toLocaleString());
+  if (consumedModeEnabled) {
+    setText('stat-chat-quota', totalConsumed.toLocaleString());
+    setText('stat-image-quota', Math.floor(totalConsumed / 2).toLocaleString());
+  } else {
+    setText('stat-chat-quota', stats.chatQuota.toLocaleString());
+    setText('stat-image-quota', imageQuota.toLocaleString());
+  }
   setText('stat-total-calls', stats.totalCalls.toLocaleString());
 
   updateTabCounts({
@@ -309,7 +343,13 @@ function renderTable() {
     // Quota (Center)
     const tdQuota = document.createElement('td');
     tdQuota.className = 'text-center font-mono text-xs';
-    tdQuota.innerText = item.quota;
+    if (consumedModeEnabled) {
+      tdQuota.innerText = Number(item.consumed || 0);
+      tdQuota.title = t('token.tableQuotaConsumed');
+    } else {
+      tdQuota.innerText = item.quota;
+      tdQuota.title = t('token.tableQuota');
+    }
 
     // Note (Left)
     const tdNote = document.createElement('td');
@@ -519,7 +559,26 @@ function openEditModal(index) {
     byId('edit-original-token').value = item.token;
     byId('edit-original-pool').value = item.pool;
     byId('edit-pool').value = item.pool;
-    byId('edit-quota').value = item.quota;
+    const quotaInput = byId('edit-quota');
+    const quotaField = quotaInput ? quotaInput.closest('div') : null;
+    const quotaLabel = quotaField ? quotaField.querySelector('label') : null;
+    if (consumedModeEnabled) {
+      quotaInput.value = Number(item.consumed || 0);
+      quotaInput.disabled = true;
+      quotaInput.classList.add('bg-gray-100', 'text-gray-400');
+      if (quotaLabel) {
+        quotaLabel.dataset.i18n = 'token.tableQuotaConsumed';
+        quotaLabel.textContent = t('token.tableQuotaConsumed');
+      }
+    } else {
+      quotaInput.value = item.quota;
+      quotaInput.disabled = false;
+      quotaInput.classList.remove('bg-gray-100', 'text-gray-400');
+      if (quotaLabel) {
+        quotaLabel.dataset.i18n = 'token.editQuota';
+        quotaLabel.textContent = t('token.editQuota');
+      }
+    }
     byId('edit-note').value = item.note;
     document.querySelector('#edit-modal h3').innerText = t('token.editTitle');
   } else {
@@ -533,7 +592,16 @@ function openEditModal(index) {
     byId('edit-original-token').value = '';
     byId('edit-original-pool').value = '';
     byId('edit-pool').value = 'ssoBasic';
-    byId('edit-quota').value = getDefaultQuotaForPool('ssoBasic');
+    const newQuotaInput = byId('edit-quota');
+    const newQuotaField = newQuotaInput ? newQuotaInput.closest('div') : null;
+    const newQuotaLabel = newQuotaField ? newQuotaField.querySelector('label') : null;
+    newQuotaInput.value = getDefaultQuotaForPool('ssoBasic');
+    newQuotaInput.disabled = false;
+    newQuotaInput.classList.remove('bg-gray-100', 'text-gray-400');
+    if (newQuotaLabel) {
+      newQuotaLabel.dataset.i18n = 'token.editQuota';
+      newQuotaLabel.textContent = t('token.editQuota');
+    }
     byId('edit-note').value = '';
     document.querySelector('#edit-modal h3').innerText = t('token.addTitle');
   }
@@ -566,13 +634,16 @@ async function saveEdit() {
   // Collect data
   let token;
   const newPool = byId('edit-pool').value.trim();
-  const newQuota = parseInt(byId('edit-quota').value) || 0;
+  const quotaFieldValue = parseInt(byId('edit-quota').value, 10);
   const newNote = byId('edit-note').value.trim().slice(0, 50);
 
   if (currentEditIndex >= 0) {
     // Updating existing
     const item = flatTokens[currentEditIndex];
     token = item.token;
+    const newQuota = consumedModeEnabled
+      ? item.quota
+      : (Number.isNaN(quotaFieldValue) ? 0 : quotaFieldValue);
 
     // Update flatTokens first to reflect UI
     item.pool = newPool || 'ssoBasic';
@@ -580,6 +651,7 @@ async function saveEdit() {
     item.note = newNote;
   } else {
     // Creating new
+    const newQuota = Number.isNaN(quotaFieldValue) ? 0 : quotaFieldValue;
     token = byId('edit-token-display').value.trim();
     if (!token) return showToast(t('token.tokenEmpty'), 'error');
 
@@ -592,6 +664,7 @@ async function saveEdit() {
       token: token,
       pool: newPool || 'ssoBasic',
       quota: newQuota,
+      consumed: 0,
       note: newNote,
       status: 'active', // default
       use_count: 0,
@@ -694,6 +767,7 @@ async function syncToServer() {
       token: t.token,
       status: t.status,
       quota: t.quota,
+      consumed: Number(t.consumed || 0),
       note: t.note,
       fail_count: t.fail_count,
       use_count: t.use_count || 0,
@@ -749,6 +823,7 @@ async function submitImport() {
         pool: pool,
         status: 'active',
         quota: defaultQuota,
+        consumed: 0,
         note: '',
         tags: [],
         fail_count: 0,

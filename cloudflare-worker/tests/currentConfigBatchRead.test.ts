@@ -77,5 +77,7 @@ test("getCurrentConfig loads all sections from a single batched settings query",
   assert.equal(batchQueryCount, 1);
   assert.equal(String(config.app.app_key ?? ""), "admin");
   assert.equal(String(config.proxy.browser ?? ""), "chrome136");
+  assert.equal(Boolean(config.token.consumed_mode_enabled), false);
+  assert.equal(Boolean(config.video.enable_public_asset), false);
   assert.equal(Number(config.video.concurrent ?? 0), 100);
 });
