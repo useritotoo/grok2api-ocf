@@ -712,7 +712,8 @@
   color: #f8fafc;
   background: linear-gradient(180deg, rgba(15, 23, 42, 0.56), rgba(15, 23, 42, 0.82));
   backdrop-filter: blur(12px);
-  border-radius: 14px;
+  border-radius: 8px;
+  max-width: 300px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
