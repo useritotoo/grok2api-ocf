@@ -432,9 +432,11 @@ function buildExperimentalImageEditPayload(args: {
   prompt: string;
   imageReferences: string[];
   modelName: "imagine-image-edit" | "grok-3";
+  settings: GrokSettings;
 }): Record<string, unknown> {
+  const customPersonality = String(args.settings.custom_instruction ?? "").trim();
   const payload: Record<string, unknown> = {
-    temporary: true,
+    temporary: args.settings.temporary ?? true,
     modelName: args.modelName,
     message: args.prompt,
     fileAttachments: [],
@@ -451,7 +453,7 @@ function buildExperimentalImageEditPayload(args: {
     sendFinalMetadata: true,
     isReasoning: false,
     disableTextFollowUps: false,
-    disableMemory: false,
+    disableMemory: args.settings.disable_memory === true,
     forceSideBySide: false,
     isAsyncChat: false,
     responseMetadata: {
@@ -467,6 +469,7 @@ function buildExperimentalImageEditPayload(args: {
         modelId: args.modelName,
       },
     },
+    ...(customPersonality ? { customPersonality } : {}),
   };
 
   if (args.modelName === "grok-3") {
@@ -481,6 +484,7 @@ export async function sendExperimentalImageEditRequest(args: {
   fileUris: string[];
   cookie: string;
   settings: GrokSettings;
+  timeoutMs?: number | null;
 }): Promise<Response> {
   const imageReferences = args.fileUris.map((uri) => normalizeAssetUrl(uri)).filter(Boolean);
   if (!imageReferences.length) {
@@ -492,11 +496,13 @@ export async function sendExperimentalImageEditRequest(args: {
       prompt: args.prompt,
       imageReferences,
       modelName: "imagine-image-edit",
+      settings: args.settings,
     }),
     buildExperimentalImageEditPayload({
       prompt: args.prompt,
       imageReferences,
       modelName: "grok-3",
+      settings: args.settings,
     }),
   ];
 
@@ -507,6 +513,7 @@ export async function sendExperimentalImageEditRequest(args: {
       payload,
       cookie: args.cookie,
       settings: args.settings,
+      timeoutMs: args.timeoutMs,
       referer: IMAGINE_REFERER,
     });
     if (upstream.ok) return upstream;

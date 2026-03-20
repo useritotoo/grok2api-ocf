@@ -3,12 +3,26 @@ import { getDynamicHeaders } from "./headers";
 
 const ENDPOINT = "https://grok.com/rest/media/post/create";
 
+function withTimeout(init: RequestInit, timeoutMs?: number | null): RequestInit {
+  const normalizedTimeoutMs = Number(timeoutMs);
+  if (
+    !Number.isFinite(normalizedTimeoutMs)
+    || normalizedTimeoutMs <= 0
+    || typeof AbortSignal === "undefined"
+    || typeof AbortSignal.timeout !== "function"
+  ) {
+    return init;
+  }
+  return { ...init, signal: AbortSignal.timeout(Math.floor(normalizedTimeoutMs)) };
+}
+
 export type MediaPostType = "MEDIA_POST_TYPE_VIDEO" | "MEDIA_POST_TYPE_IMAGE";
 
 export async function createMediaPost(
   args: { mediaType: MediaPostType; prompt?: string; mediaUrl?: string },
   cookie: string,
   settings: GrokSettings,
+  timeoutMs?: number | null,
 ): Promise<{ postId: string }> {
   const headers = getDynamicHeaders(settings, "/rest/media/post/create");
   headers.Cookie = cookie;
@@ -25,7 +39,10 @@ export async function createMediaPost(
 
   const body = JSON.stringify(bodyObj);
 
-  const resp = await fetch(ENDPOINT, { method: "POST", headers, body });
+  const resp = await fetch(
+    ENDPOINT,
+    withTimeout({ method: "POST", headers, body }, timeoutMs),
+  );
   if (!resp.ok) {
     const text = await resp.text().catch(() => "");
     throw new Error(`创建会话失败: ${resp.status} ${text.slice(0, 200)}`);
@@ -39,9 +56,10 @@ export async function createPost(
   fileUri: string,
   cookie: string,
   settings: GrokSettings,
+  timeoutMs?: number | null,
 ): Promise<{ postId: string }> {
   const path = fileUri.startsWith("/") ? fileUri : `/${fileUri}`;
   const url = `https://assets.grok.com${path}`;
-  return createMediaPost({ mediaType: "MEDIA_POST_TYPE_IMAGE", mediaUrl: url }, cookie, settings);
+  return createMediaPost({ mediaType: "MEDIA_POST_TYPE_IMAGE", mediaUrl: url }, cookie, settings, timeoutMs);
 }
 

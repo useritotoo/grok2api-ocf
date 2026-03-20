@@ -2,7 +2,6 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import type { Env } from "../env";
 import { requireApiAuth, requireModelAuth } from "../auth";
-import { getCurrentConfig } from "../currentConfig";
 import { buildSsoCookie, getSettings } from "../settings";
 import { isValidModel, MODEL_CONFIG } from "../grok/models";
 import {
@@ -15,7 +14,7 @@ import { uploadAttachment, uploadImage } from "../grok/upload";
 import { getDynamicHeaders } from "../grok/headers";
 import { createMediaPost } from "../grok/create";
 import { createOpenAiStreamFromGrokNdjson, parseOpenAiFromGrokNdjson } from "../grok/processor";
-import { buildVideoGenerationPlan, upscaleVideoUrl } from "../grok/video";
+import { buildVideoGenerationPlan, publicizeVideoUrl, upscaleVideoUrl } from "../grok/video";
 import {
   IMAGE_METHOD_IMAGINE_WS_EXPERIMENTAL,
   ImagineWsError,
@@ -167,6 +166,81 @@ function parseIntSafe(v: string | undefined, fallback: number): number {
   const n = Number(v);
   if (!Number.isFinite(n)) return fallback;
   return Math.floor(n);
+}
+
+function parseRetryNumber(value: unknown, fallback: number, min = 0): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(min, parsed);
+}
+
+function parseRetryCodeList(value: unknown, fallback: number[]): number[] {
+  if (!Array.isArray(value)) return [...fallback];
+  const normalized = value.map((item) => Number(item)).filter((item) => Number.isFinite(item));
+  return normalized.length ? normalized : [...fallback];
+}
+
+function resolveRetryPolicy(retryConfig: Record<string, unknown> | null | undefined): {
+  maxRetry: number;
+  retryCodes: number[];
+  backoffBaseMs: number;
+  backoffFactor: number;
+  backoffMaxMs: number;
+  retryBudgetMs: number;
+} {
+  const maxRetry = Math.max(0, Math.floor(parseRetryNumber(retryConfig?.max_retry, 3)));
+  const backoffBaseMs = Math.max(0, parseRetryNumber(retryConfig?.retry_backoff_base, 0.5) * 1000);
+  const backoffFactor = Math.max(1, parseRetryNumber(retryConfig?.retry_backoff_factor, 2, 1));
+  const backoffMaxMs = Math.max(
+    backoffBaseMs,
+    parseRetryNumber(retryConfig?.retry_backoff_max, 20) * 1000,
+  );
+  const retryBudgetMs = Math.max(0, parseRetryNumber(retryConfig?.retry_budget, 60) * 1000);
+  const retryCodes = parseRetryCodeList(retryConfig?.retry_status_codes, [401, 429, 403]);
+
+  return {
+    maxRetry,
+    retryCodes,
+    backoffBaseMs,
+    backoffFactor,
+    backoffMaxMs,
+    retryBudgetMs,
+  };
+}
+
+function parseRetryAfterMs(value: string | null): number | null {
+  const parsed = Number(value ?? "");
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  return Math.max(0, parsed * 1000);
+}
+
+function resolveTimeoutMs(value: unknown, fallbackSeconds: number): number | null {
+  const parsed = Number(value);
+  const safeSeconds = Number.isFinite(parsed) ? parsed : fallbackSeconds;
+  if (!Number.isFinite(safeSeconds) || safeSeconds <= 0) return null;
+  return Math.max(1_000, Math.floor(safeSeconds * 1000));
+}
+
+function computeRetryDelayMs(args: {
+  attempt: number;
+  status: number;
+  retryAfterMs: number | null;
+  policy: ReturnType<typeof resolveRetryPolicy>;
+}): number {
+  if (args.retryAfterMs !== null) {
+    return Math.min(args.retryAfterMs, args.policy.backoffMaxMs);
+  }
+  if (args.status === 429) {
+    return Math.min(args.policy.backoffMaxMs, Math.max(args.policy.backoffBaseMs, args.policy.backoffBaseMs * 2));
+  }
+
+  const expDelay = args.policy.backoffBaseMs * args.policy.backoffFactor ** Math.max(0, args.attempt - 1);
+  return Math.min(args.policy.backoffMaxMs, expDelay);
+}
+
+async function sleep(ms: number): Promise<void> {
+  if (ms <= 0) return;
+  await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function quotaError(bucket: string): Record<string, unknown> {
@@ -728,6 +802,7 @@ async function runImageCall(args: {
   settings: Awaited<ReturnType<typeof getSettings>>["grok"];
   responseFormat: ImageResponseFormat;
   baseUrl: string;
+  timeoutMs?: number | null;
 }): Promise<string[]> {
   const { payload, referer } = buildConversationPayload({
     requestModel: args.requestModel,
@@ -741,6 +816,7 @@ async function runImageCall(args: {
     payload,
     cookie: args.cookie,
     settings: args.settings,
+    timeoutMs: args.timeoutMs,
     ...(referer ? { referer } : {}),
   });
   if (!upstream.ok) {
@@ -766,6 +842,7 @@ async function runImageStreamCall(args: {
   fileIds: string[];
   cookie: string;
   settings: Awaited<ReturnType<typeof getSettings>>["grok"];
+  timeoutMs?: number | null;
 }): Promise<Response> {
   const { payload, referer } = buildConversationPayload({
     requestModel: args.requestModel,
@@ -779,6 +856,7 @@ async function runImageStreamCall(args: {
     payload,
     cookie: args.cookie,
     settings: args.settings,
+    timeoutMs: args.timeoutMs,
     ...(referer ? { referer } : {}),
   });
 }
@@ -796,6 +874,7 @@ async function collectExperimentalGenerationImages(args: {
   baseUrl: string;
   aspectRatio: string;
   concurrency: number;
+  timeoutMs?: number | null;
 }): Promise<string[]> {
   void args.concurrency;
   const images = await collectImagineWsImages({
@@ -803,6 +882,7 @@ async function collectExperimentalGenerationImages(args: {
     n: Math.max(1, args.n),
     cookie: args.cookie,
     settings: args.settings,
+    timeoutMs: args.timeoutMs ?? undefined,
     aspectRatio: args.aspectRatio,
   });
   if (!images.length) {
@@ -828,12 +908,14 @@ async function runExperimentalImageEditCall(args: {
   settings: Awaited<ReturnType<typeof getSettings>>["grok"];
   responseFormat: ImageResponseFormat;
   baseUrl: string;
+  timeoutMs?: number | null;
 }): Promise<string[]> {
   const upstream = await sendExperimentalImageEditRequest({
     prompt: args.prompt,
     fileUris: args.fileUris,
     cookie: args.cookie,
     settings: args.settings,
+    timeoutMs: args.timeoutMs,
   });
   const rawUrls = await collectImageUrls(upstream, 2);
   const converted = await Promise.all(
@@ -981,6 +1063,7 @@ function createExperimentalImageEventStream(args: {
   baseUrl: string;
   aspectRatio: string;
   concurrency: number;
+  timeoutMs?: number | null;
   onFinish?: (result: { status: number; duration: number }) => Promise<void> | void;
 }): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
@@ -1045,6 +1128,7 @@ function createExperimentalImageEventStream(args: {
           n: safeN,
           cookie: args.cookie,
           settings: args.settings,
+          timeoutMs: args.timeoutMs ?? undefined,
           aspectRatio: args.aspectRatio,
           imageCb: async (image) => {
             if (image.isFinal) return;
@@ -1287,15 +1371,18 @@ export async function handleChatCompletionsRequest(args: OpenAiHandlerArgs): Pro
     const settingsBundle = await getSettings(c.env);
     const cfg = MODEL_CONFIG[requestedModel]!;
     const isVideoModel = Boolean(cfg.is_video_model);
-    const current = isVideoModel ? await getCurrentConfig(c.env) : null;
+    const current = settingsBundle.current;
     const requestedVideoConfig = isVideoModel ? body.video_config : undefined;
+    const retryPolicy = resolveRetryPolicy(current.retry ?? {});
 
-    const retryCodes = Array.isArray(settingsBundle.grok.retry_status_codes)
-      ? settingsBundle.grok.retry_status_codes
-      : [401, 429];
-
-    const stream = Boolean(body.stream);
-    const maxRetry = 3;
+    const stream = body.stream === undefined
+      ? Boolean(current.app?.stream ?? true)
+      : Boolean(body.stream);
+    const requestTimeoutMs = isVideoModel
+      ? resolveTimeoutMs(current.video?.timeout, 60)
+      : resolveTimeoutMs(current.chat?.timeout, 60);
+    const totalAttempts = retryPolicy.maxRetry + 1;
+    let retryDelaySpentMs = 0;
     let lastErr: string | null = null;
 
     // === Quota check (best-effort) ===
@@ -1313,7 +1400,7 @@ export async function handleChatCompletionsRequest(args: OpenAiHandlerArgs): Pro
     });
     if (!quota.ok) return quota.resp;
 
-    for (let attempt = 0; attempt < maxRetry; attempt++) {
+    for (let attempt = 0; attempt < totalAttempts; attempt++) {
       const chosen = await selectBestToken(c.env.DB, requestedModel, requestedVideoConfig);
       if (!chosen) return c.json(openAiError("No available token", "NO_AVAILABLE_TOKEN"), 503);
 
@@ -1437,6 +1524,7 @@ export async function handleChatCompletionsRequest(args: OpenAiHandlerArgs): Pro
               { mediaType: "MEDIA_POST_TYPE_VIDEO", prompt: preparedVideoPrompt },
               cookie,
               settingsBundle.grok,
+              requestTimeoutMs,
             );
             postId = post.postId || undefined;
           }
@@ -1465,6 +1553,7 @@ export async function handleChatCompletionsRequest(args: OpenAiHandlerArgs): Pro
           payload,
           cookie,
           settings: settingsBundle.grok,
+          timeoutMs: requestTimeoutMs,
           ...(referer ? { referer } : {}),
         });
 
@@ -1473,18 +1562,45 @@ export async function handleChatCompletionsRequest(args: OpenAiHandlerArgs): Pro
           lastErr = `Upstream ${upstream.status}: ${txt.slice(0, 200)}`;
           await recordTokenFailure(c.env.DB, jwt, upstream.status, txt.slice(0, 200));
           await applyCooldown(c.env.DB, jwt, upstream.status);
-          if (retryCodes.includes(upstream.status) && attempt < maxRetry - 1) continue;
+          const retryAfterMs = parseRetryAfterMs(upstream.headers.get("retry-after"));
+          const canRetry = retryPolicy.retryCodes.includes(upstream.status) && attempt < totalAttempts - 1;
+          if (canRetry) {
+            const delayMs = computeRetryDelayMs({
+              attempt: attempt + 1,
+              status: upstream.status,
+              retryAfterMs,
+              policy: retryPolicy,
+            });
+            if (retryDelaySpentMs + delayMs <= retryPolicy.retryBudgetMs) {
+              retryDelaySpentMs += delayMs;
+              await sleep(delayMs);
+              continue;
+            }
+          }
           break;
         }
 
+        const enablePublicAsset = isVideoModel && current.video?.enable_public_asset === true;
         const transformVideoAsset =
-          isVideoModel && videoPlan?.shouldUpscale
+          isVideoModel && (videoPlan?.shouldUpscale || enablePublicAsset)
             ? async (asset: { videoUrl: string; thumbnailUrl?: string }) => {
-                const { videoUrl } = await upscaleVideoUrl({
-                  videoUrl: asset.videoUrl,
-                  cookie,
-                  settings: settingsBundle.grok,
-                });
+                let videoUrl = asset.videoUrl;
+                if (videoPlan?.shouldUpscale) {
+                  const upscaled = await upscaleVideoUrl({
+                    videoUrl,
+                    cookie,
+                    settings: settingsBundle.grok,
+                  });
+                  videoUrl = upscaled.videoUrl;
+                }
+                if (enablePublicAsset) {
+                  const publicized = await publicizeVideoUrl({
+                    videoUrl,
+                    cookie,
+                    settings: settingsBundle.grok,
+                  });
+                  videoUrl = publicized.videoUrl;
+                }
                 return {
                   videoUrl,
                   ...(asset.thumbnailUrl ? { thumbnailUrl: asset.thumbnailUrl } : {}),
@@ -1501,9 +1617,10 @@ export async function handleChatCompletionsRequest(args: OpenAiHandlerArgs): Pro
             ...(videoPlan?.shouldUpscale
               ? {
                   videoMode: videoPlan.upscaleTiming === "complete" ? "finalize" : "eager",
-                  transformVideoAsset,
                 }
               : {}),
+            ...(isVideoModel ? { videoFormat: current.app?.video_format } : {}),
+            ...(transformVideoAsset ? { transformVideoAsset } : {}),
             onFinish: async ({ status, duration }) => {
               await addRequestLog(c.env.DB, {
                 ip,
@@ -1535,6 +1652,7 @@ export async function handleChatCompletionsRequest(args: OpenAiHandlerArgs): Pro
           global: settingsBundle.global,
           origin,
           requestedModel,
+          ...(isVideoModel ? { videoFormat: current.app?.video_format } : {}),
           ...(transformVideoAsset ? { transformVideoAsset } : {}),
         });
 
@@ -1555,7 +1673,19 @@ export async function handleChatCompletionsRequest(args: OpenAiHandlerArgs): Pro
         lastErr = msg;
         await recordTokenFailure(c.env.DB, jwt, 500, msg);
         await applyCooldown(c.env.DB, jwt, 500);
-        if (attempt < maxRetry - 1) continue;
+        if (attempt < totalAttempts - 1) {
+          const delayMs = computeRetryDelayMs({
+            attempt: attempt + 1,
+            status: 500,
+            retryAfterMs: null,
+            policy: retryPolicy,
+          });
+          if (retryDelaySpentMs + delayMs <= retryPolicy.retryBudgetMs) {
+            retryDelaySpentMs += delayMs;
+            await sleep(delayMs);
+            continue;
+          }
+        }
       }
     }
 
@@ -1631,6 +1761,7 @@ export async function handleImageGenerationsRequest(args: OpenAiHandlerArgs): Pr
     const stream = parseImageStream(body.stream);
 
     const settingsBundle = await getSettings(c.env);
+    const imageTimeoutMs = resolveTimeoutMs(settingsBundle.current.image?.timeout, 60);
     const imageMethod = imageGenerationMethod(settingsBundle);
     if (stream && imageMethod !== IMAGE_METHOD_IMAGINE_WS_EXPERIMENTAL && ![1, 2].includes(n)) {
       return c.json(openAiError(invalidStreamNMessage(), "invalid_stream_n"), 400);
@@ -1674,6 +1805,7 @@ export async function handleImageGenerationsRequest(args: OpenAiHandlerArgs): Pr
             baseUrl,
             aspectRatio,
             concurrency,
+            timeoutMs: imageTimeoutMs,
             onFinish: async ({ status, duration }) => {
               await addRequestLog(c.env.DB, {
                 ip,
@@ -1717,6 +1849,7 @@ export async function handleImageGenerationsRequest(args: OpenAiHandlerArgs): Pr
         fileIds: [],
         cookie,
         settings: settingsBundle.grok,
+        timeoutMs: imageTimeoutMs,
       });
       if (!upstream.ok) {
         const txt = await upstream.text().catch(() => "");
@@ -1779,6 +1912,7 @@ export async function handleImageGenerationsRequest(args: OpenAiHandlerArgs): Pr
             baseUrl,
             aspectRatio,
             concurrency,
+            timeoutMs: imageTimeoutMs,
           });
           const selected = pickImageResults(urls, n);
           await recordImageLog({
@@ -1819,6 +1953,7 @@ export async function handleImageGenerationsRequest(args: OpenAiHandlerArgs): Pr
             settings: settingsBundle.grok,
             responseFormat,
             baseUrl,
+            timeoutMs: imageTimeoutMs,
           });
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
@@ -1905,6 +2040,7 @@ export async function handleImageEditsRequest(args: OpenAiHandlerArgs): Promise<
     }
 
     const settingsBundle = await getSettings(c.env);
+    const imageTimeoutMs = resolveTimeoutMs(settingsBundle.current.image?.timeout, 60);
     const imageMethod = imageGenerationMethod(settingsBundle);
     const parsedResponseFormat = resolveImageResponseFormatByMethodOrError(
       form.get("response_format"),
@@ -1988,6 +2124,7 @@ export async function handleImageEditsRequest(args: OpenAiHandlerArgs): Promise<
             fileUris,
             cookie,
             settings: settingsBundle.grok,
+            timeoutMs: imageTimeoutMs,
           });
 
           const streamBody = createImageEventStream({
@@ -2025,6 +2162,7 @@ export async function handleImageEditsRequest(args: OpenAiHandlerArgs): Promise<
         fileIds,
         cookie,
         settings: settingsBundle.grok,
+        timeoutMs: imageTimeoutMs,
       });
       if (!upstream.ok) {
         const txt = await upstream.text().catch(() => "");
@@ -2084,6 +2222,7 @@ export async function handleImageEditsRequest(args: OpenAiHandlerArgs): Promise<
             settings: settingsBundle.grok,
             responseFormat,
             baseUrl,
+            timeoutMs: imageTimeoutMs,
           }),
         );
         const urls = dedupeImages(urlsNested.flat().filter(Boolean));
@@ -2120,6 +2259,7 @@ export async function handleImageEditsRequest(args: OpenAiHandlerArgs): Promise<
         settings: settingsBundle.grok,
         responseFormat,
         baseUrl,
+        timeoutMs: imageTimeoutMs,
       });
     });
     const urls = dedupeImages(urlsNested.flat().filter(Boolean));

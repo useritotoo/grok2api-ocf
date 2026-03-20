@@ -46,31 +46,42 @@ async function loadTokenTypeMap(env: Env, tokens: string[]): Promise<Map<string,
   return new Map(rows.map((row) => [row.token, row.token_type]));
 }
 
-async function runRefreshBatch(env: Env, taskId: string, tokens: string[]): Promise<void> {
+function resolvePositiveInt(value: unknown, fallback: number): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.max(1, Math.floor(parsed));
+}
+
+function resolvePositiveNumber(value: unknown, fallback: number): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return parsed;
+}
+
+export async function runRefreshBatch(env: Env, taskId: string, tokens: string[]): Promise<void> {
   const settings = await getSettings(env);
+  const usageConfig = settings.current.usage ?? {};
+  const batchSize = resolvePositiveInt(usageConfig.batch_size, tokens.length || 1);
+  const concurrency = resolvePositiveInt(usageConfig.concurrent, 1);
+  const usageTimeoutSeconds = resolvePositiveNumber(usageConfig.timeout, 60);
   const tokenTypeMap = await loadTokenTypeMap(env, tokens);
   const results: Record<string, boolean> = {};
   let processed = 0;
   let success = 0;
   let failed = 0;
 
-  for (const token of tokens) {
-    if (await isBatchTaskCancelled(env.DB, taskId)) {
-      await finishBatchTask(env.DB, taskId, { status: "cancelled", processed, success, failed });
-      return;
-    }
-
+  const processOne = async (token: string): Promise<void> => {
     const cookie = buildSsoCookie(token, settings.grok);
     const tokenType = tokenTypeMap.get(token) ?? "sso";
     let ok = false;
 
     try {
-      const normal = await checkRateLimits(cookie, settings.grok, "grok-4");
+      const normal = await checkRateLimits(cookie, settings.grok, "grok-4", usageTimeoutSeconds);
       const remaining = Number((normal as Record<string, unknown> | null)?.remainingTokens ?? NaN);
       let heavyRemaining: number | null = null;
 
       if (tokenType === "ssoSuper") {
-        const heavy = await checkRateLimits(cookie, settings.grok, "grok-4-heavy");
+        const heavy = await checkRateLimits(cookie, settings.grok, "grok-4-heavy", usageTimeoutSeconds);
         const value = Number((heavy as Record<string, unknown> | null)?.remainingTokens ?? NaN);
         if (Number.isFinite(value)) heavyRemaining = value;
       }
@@ -91,6 +102,37 @@ async function runRefreshBatch(env: Env, taskId: string, tokens: string[]): Prom
     if (ok) success += 1;
     else failed += 1;
     await updateBatchTaskProgress(env.DB, taskId, { processed, success, failed });
+  };
+
+  for (let start = 0; start < tokens.length; start += batchSize) {
+    if (await isBatchTaskCancelled(env.DB, taskId)) {
+      await finishBatchTask(env.DB, taskId, { status: "cancelled", processed, success, failed });
+      return;
+    }
+
+    const batch = tokens.slice(start, start + batchSize);
+    let nextIndex = 0;
+    let cancelled = false;
+
+    const workers = Array.from({ length: Math.min(concurrency, batch.length) }, async () => {
+      while (nextIndex < batch.length) {
+        const currentIndex = nextIndex;
+        nextIndex += 1;
+        const token = batch[currentIndex];
+        if (!token) continue;
+        if (await isBatchTaskCancelled(env.DB, taskId)) {
+          cancelled = true;
+          return;
+        }
+        await processOne(token);
+      }
+    });
+
+    await Promise.all(workers);
+    if (cancelled) {
+      await finishBatchTask(env.DB, taskId, { status: "cancelled", processed, success, failed });
+      return;
+    }
   }
 
   await finishBatchTask(env.DB, taskId, {

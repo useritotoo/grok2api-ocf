@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { requireApiAuth, requireModelAuth } from "../auth";
+import { getCurrentConfig } from "../currentConfig";
 import type { Env } from "../env";
 import {
   createModelDetailResponse,
@@ -187,7 +188,10 @@ currentOpenAiRoutes.post("/responses", async (c) => {
 
   const messages = normalizeResponseInput(body.input);
   const instructions = String(body.instructions ?? "").trim();
-  const stream = Boolean(body.stream);
+  const current = await getCurrentConfig(c.env);
+  const stream = body.stream === undefined
+    ? Boolean(current.app?.stream ?? true)
+    : Boolean(body.stream);
   const reasoning = body.reasoning && typeof body.reasoning === "object"
     ? (body.reasoning as Record<string, unknown>)
     : null;

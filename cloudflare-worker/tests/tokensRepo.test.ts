@@ -3,7 +3,10 @@ import test from "node:test";
 
 import { applyCooldown, recordTokenFailure, selectBestToken } from "../src/repo/tokens.ts";
 
-function createTokenDb(initial?: Partial<{ failed_count: number; status: string; cooldown_until: number | null }>) {
+function createTokenDb(
+  initial?: Partial<{ failed_count: number; status: string; cooldown_until: number | null }>,
+  options?: Partial<{ fail_threshold: number }>,
+) {
   const state = {
     failed_count: initial?.failed_count ?? 0,
     status: initial?.status ?? "active",
@@ -21,6 +24,15 @@ function createTokenDb(initial?: Partial<{ failed_count: number; status: string;
           return this;
         },
         first<T>() {
+          if (sql === "SELECT value FROM settings WHERE key = ?") {
+            const key = String(params[0] ?? "");
+            if (key === "token") {
+              return Promise.resolve(({
+                value: JSON.stringify({ fail_threshold: options?.fail_threshold ?? 3 }),
+              } as unknown) as T);
+            }
+            return Promise.resolve(null);
+          }
           if (sql === "SELECT failed_count FROM tokens WHERE token = ?") {
             return Promise.resolve(({ failed_count: state.failed_count } as unknown) as T);
           }
@@ -169,6 +181,18 @@ test("401 failures still expire tokens after the threshold", async () => {
   await recordTokenFailure(db as any, "token-1", 401, "unauthorized");
 
   assert.equal(state.failed_count, 3);
+  assert.equal(state.status, "expired");
+});
+
+test("401 failures honor token.fail_threshold from settings before expiring a token", async () => {
+  const { db, state } = createTokenDb({ failed_count: 3 }, { fail_threshold: 5 });
+
+  await recordTokenFailure(db as any, "token-1", 401, "unauthorized");
+  assert.equal(state.failed_count, 4);
+  assert.equal(state.status, "active");
+
+  await recordTokenFailure(db as any, "token-1", 401, "unauthorized");
+  assert.equal(state.failed_count, 5);
   assert.equal(state.status, "expired");
 });
 

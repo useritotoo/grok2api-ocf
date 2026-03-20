@@ -873,12 +873,18 @@ async function buildVoiceTokenResponse(
     livekitUrl: "wss://livekit.grok.com",
     params: { enable_markdown_transcript: "true" },
   };
-
-  const upstream = await fetch("https://grok.com/rest/livekit/tokens", {
+  const voiceTimeoutSeconds = Number(settings.current.voice?.timeout ?? 60);
+  const requestInit: RequestInit = {
     method: "POST",
     headers,
     body: JSON.stringify(payload),
-  });
+  };
+  if (typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function") {
+    const timeoutMs = Math.max(1_000, Math.floor((Number.isFinite(voiceTimeoutSeconds) ? voiceTimeoutSeconds : 60) * 1000));
+    requestInit.signal = AbortSignal.timeout(timeoutMs);
+  }
+
+  const upstream = await fetch("https://grok.com/rest/livekit/tokens", requestInit);
 
   if (!upstream.ok) {
     const body = await upstream.text().catch(() => "");

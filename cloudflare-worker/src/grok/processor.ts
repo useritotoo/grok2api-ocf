@@ -74,6 +74,25 @@ function buildVideoHtml(args: { videoUrl: string; posterUrl?: string; posterPrev
   return buildVideoTag(args.videoUrl);
 }
 
+function normalizeVideoFormat(value: unknown): "url" | "markdown" | "html" {
+  const normalized = String(value ?? "html").trim().toLowerCase();
+  if (normalized === "url") return "url";
+  if (normalized === "markdown") return "markdown";
+  return "html";
+}
+
+function buildVideoContent(args: {
+  videoUrl: string;
+  posterUrl?: string;
+  posterPreview: boolean;
+  format?: unknown;
+}): string {
+  const format = normalizeVideoFormat(args.format);
+  if (format === "url") return `${args.videoUrl}\n`;
+  if (format === "markdown") return `[video](${args.videoUrl})`;
+  return buildVideoHtml(args);
+}
+
 type VideoAssetPayload = {
   videoUrl: string;
   thumbnailUrl?: string;
@@ -295,6 +314,7 @@ export function createOpenAiStreamFromGrokNdjson(
     origin: string;
     requestedModel: string;
     videoMode?: "eager" | "finalize";
+    videoFormat?: unknown;
     transformVideoAsset?: VideoAssetTransformer;
     onFinish?: (result: { status: number; duration: number }) => Promise<void> | void;
   },
@@ -371,10 +391,11 @@ export function createOpenAiStreamFromGrokNdjson(
               id,
               created,
               currentModel,
-              buildVideoHtml({
+              buildVideoContent({
                 videoUrl: render.videoUrl,
                 posterPreview: settings.video_poster_preview === true,
                 ...(render.posterUrl ? { posterUrl: render.posterUrl } : {}),
+                format: opts.videoFormat,
               }),
             ),
           ),
@@ -656,6 +677,7 @@ export async function parseOpenAiFromGrokNdjson(
     global: GlobalSettings;
     origin: string;
     requestedModel: string;
+    videoFormat?: unknown;
     transformVideoAsset?: VideoAssetTransformer;
   },
 ): Promise<Record<string, unknown>> {
@@ -684,10 +706,11 @@ export async function parseOpenAiFromGrokNdjson(
         transformVideoAsset: opts.transformVideoAsset,
       });
       if (!render) return false;
-      content = buildVideoHtml({
+      content = buildVideoContent({
         videoUrl: render.videoUrl,
         posterPreview: settings.video_poster_preview === true,
         ...(render.posterUrl ? { posterUrl: render.posterUrl } : {}),
+        format: opts.videoFormat,
       });
       model = requestedModel;
       return true;

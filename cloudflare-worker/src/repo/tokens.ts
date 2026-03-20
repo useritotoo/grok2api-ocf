@@ -22,12 +22,15 @@ export interface TokenRow {
   last_asset_clear_at: number | null;
 }
 
-const MAX_FAILURES = 3;
+const DEFAULT_FAIL_THRESHOLD = 3;
 const SHORT_COOLDOWN_SECONDS = 30;
 const RATE_LIMIT_COOLDOWN_SECONDS = 90;
 const AUTH_COOLDOWN_SECONDS = 60;
-const CONSUMED_MODE_CACHE_TTL_MS = 1000;
-const consumedModeCache = new WeakMap<Env["DB"], { value: boolean; expiresAt: number }>();
+const TOKEN_CONFIG_CACHE_TTL_MS = 1000;
+const tokenConfigCache = new WeakMap<
+  Env["DB"],
+  { value: { consumedModeEnabled: boolean; failThreshold: number }; expiresAt: number }
+>();
 
 function isTokenAuthFailure(status: number): boolean {
   return status === 401 || status === 403;
@@ -48,28 +51,38 @@ function normalizeConsumed(value: unknown): number {
   return Math.floor(parsed);
 }
 
-async function isConsumedModeEnabled(db: Env["DB"]): Promise<boolean> {
+async function getTokenRuntimeConfig(
+  db: Env["DB"],
+): Promise<{ consumedModeEnabled: boolean; failThreshold: number }> {
   const now = Date.now();
-  const cached = consumedModeCache.get(db);
+  const cached = tokenConfigCache.get(db);
   if (cached && cached.expiresAt > now) return cached.value;
 
-  let enabled = false;
+  let consumedModeEnabled = false;
+  let failThreshold = DEFAULT_FAIL_THRESHOLD;
   try {
     const row = await dbFirst<{ value: string }>(db, "SELECT value FROM settings WHERE key = ?", ["token"]);
     if (row?.value) {
       try {
         const parsed = JSON.parse(row.value) as Record<string, unknown>;
-        enabled = Boolean(parsed?.consumed_mode_enabled);
+        consumedModeEnabled = Boolean(parsed?.consumed_mode_enabled);
+        const parsedFailThreshold = Number(parsed?.fail_threshold);
+        if (Number.isFinite(parsedFailThreshold) && parsedFailThreshold > 0) {
+          failThreshold = Math.floor(parsedFailThreshold);
+        }
       } catch {
-        enabled = false;
+        consumedModeEnabled = false;
+        failThreshold = DEFAULT_FAIL_THRESHOLD;
       }
     }
   } catch {
-    enabled = false;
+    consumedModeEnabled = false;
+    failThreshold = DEFAULT_FAIL_THRESHOLD;
   }
 
-  consumedModeCache.set(db, { value: enabled, expiresAt: now + CONSUMED_MODE_CACHE_TTL_MS });
-  return enabled;
+  const value = { consumedModeEnabled, failThreshold };
+  tokenConfigCache.set(db, { value, expiresAt: now + TOKEN_CONFIG_CACHE_TTL_MS });
+  return value;
 }
 
 function getSelectionCost(model: string): number {
@@ -230,7 +243,7 @@ export async function selectBestToken(
   const isVideo = model === "grok-imagine-1.0-video";
   const field = isHeavy ? "heavy_remaining_queries" : "remaining_queries";
   const preferSuperVideo = isVideo && requiresSuperVideoToken(options);
-  const consumedModeEnabled = await isConsumedModeEnabled(db);
+  const { consumedModeEnabled, failThreshold } = await getTokenRuntimeConfig(db);
 
   const pick = async (token_type: TokenType): Promise<{ token: string; token_type: TokenType } | null> => {
     const row = await dbFirst<{ token: string }>(
@@ -251,7 +264,7 @@ export async function selectBestToken(
          AND ${field} != 0
        ORDER BY CASE WHEN ${field} = -1 THEN 0 ELSE 1 END, ${field} DESC, created_time ASC
        LIMIT 1`,
-      [token_type, MAX_FAILURES, now],
+      [token_type, failThreshold, now],
     );
     if (!row) return null;
     if (consumedModeEnabled) {
@@ -274,6 +287,7 @@ export async function recordTokenFailure(
   status: number,
   message: string,
 ): Promise<void> {
+  const { failThreshold } = await getTokenRuntimeConfig(db);
   const now = nowMs();
   const reason = `${status}: ${message}`;
   if (isTokenAuthFailure(status)) {
@@ -285,7 +299,7 @@ export async function recordTokenFailure(
 
     const row = await dbFirst<{ failed_count: number }>(db, "SELECT failed_count FROM tokens WHERE token = ?", [token]);
     if (!row) return;
-    if (row.failed_count >= MAX_FAILURES) {
+    if (row.failed_count >= failThreshold) {
       await dbRun(db, "UPDATE tokens SET status = 'expired' WHERE token = ?", [token]);
     }
     return;

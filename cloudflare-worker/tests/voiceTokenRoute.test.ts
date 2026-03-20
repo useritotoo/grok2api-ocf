@@ -17,8 +17,8 @@ function createExecutionContext(waitUntilTasks?: Promise<unknown>[]): ExecutionC
   } as any;
 }
 
-function createFakeDb() {
-  const settings = new Map<string, string>([
+function createFakeDb(extraSettings: Record<string, unknown> = {}) {
+  const settingEntries: Array<[string, string]> = [
     [
       "app",
       JSON.stringify({
@@ -30,7 +30,11 @@ function createFakeDb() {
         video_format: "html",
       }),
     ],
-  ]);
+    ...Object.entries(extraSettings).map(
+      ([key, value]): [string, string] => [key, JSON.stringify(value)],
+    ),
+  ];
+  const settings = new Map<string, string>(settingEntries);
 
   const db: D1Database = {
     prepare(sql: string) {
@@ -129,6 +133,60 @@ test("function voice token preserves upstream livekit urls and ice servers", asy
       credential: "secret",
     },
   ]);
+});
+
+test("function voice token uses current voice.timeout for the upstream request", async () => {
+  const originalTimeout = AbortSignal.timeout;
+  const sentinelSignal = new AbortController().signal;
+  let timeoutMs = -1;
+
+  (AbortSignal as any).timeout = (ms: number) => {
+    timeoutMs = ms;
+    return sentinelSignal;
+  };
+
+  try {
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "https://grok.com/rest/livekit/tokens") {
+        assert.equal(init?.signal, sentinelSignal);
+        return new Response(
+          JSON.stringify({
+            token: "voice-token",
+            url: "wss://livekit.grok.com",
+          }),
+          {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          },
+        );
+      }
+      return originalFetch(input, init);
+    }) as typeof fetch;
+
+    const response = await (worker.fetch as any)(
+      new Request("https://example.com/v1/function/voice/token?voice=ara&personality=assistant&speed=1", {
+        headers: { Authorization: "Bearer function-secret" },
+      }),
+      {
+        DB: createFakeDb({
+          voice: {
+            timeout: 7,
+          },
+        }),
+        BUILD_SHA: "dev",
+        CACHE_RESET_TZ_OFFSET_MINUTES: "480",
+        KV_CACHE_MAX_BYTES: "26214400",
+        KV_CLEANUP_BATCH: "200",
+      } as any,
+      createExecutionContext(),
+    );
+
+    assert.equal(response.status, 200);
+    assert.equal(timeoutMs, 7000);
+  } finally {
+    (AbortSignal as any).timeout = originalTimeout;
+  }
 });
 
 test.after(() => {

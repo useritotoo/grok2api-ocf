@@ -42,6 +42,19 @@ export interface OpenAIChatRequestBody {
 export const CONVERSATION_API = "https://grok.com/rest/app-chat/conversations/new";
 const GROK_ASSET_ORIGIN = "https://assets.grok.com";
 
+function withTimeout(init: RequestInit, timeoutMs?: number | null): RequestInit {
+  const normalizedTimeoutMs = Number(timeoutMs);
+  if (
+    !Number.isFinite(normalizedTimeoutMs)
+    || normalizedTimeoutMs <= 0
+    || typeof AbortSignal === "undefined"
+    || typeof AbortSignal.timeout !== "function"
+  ) {
+    return init;
+  }
+  return { ...init, signal: AbortSignal.timeout(Math.floor(normalizedTimeoutMs)) };
+}
+
 function extractFileValue(item: OpenAIChatContentPart): string {
   if (!item) return "";
   if (typeof item.file === "string") return String(item.file).trim();
@@ -191,6 +204,9 @@ export function buildConversationPayload(args: {
   const { requestModel, content, fileIds, imgIds, imgUris, postId, settings } = args;
   const cfg = getModelInfo(requestModel);
   const { grokModel, mode, isVideoModel } = toGrokModel(requestModel);
+  const temporary = settings.temporary ?? true;
+  const disableMemory = settings.disable_memory === true;
+  const customPersonality = String(settings.custom_instruction ?? "").trim();
 
   if (cfg?.is_video_model) {
     if (!postId) throw new Error("Video model requires a media post id.");
@@ -257,12 +273,13 @@ export function buildConversationPayload(args: {
       isVideoModel: true,
       referer: "https://grok.com/imagine",
       payload: {
-        temporary: true,
+        temporary,
         modelName: "grok-3",
         message: prompt,
         fileAttachments,
         toolOverrides: { videoGen: true },
         enableSideBySide: true,
+        disableMemory,
         responseMetadata: {
           experiments: [],
           modelConfigOverride: {
@@ -271,6 +288,7 @@ export function buildConversationPayload(args: {
             },
           },
         },
+        ...(customPersonality ? { customPersonality } : {}),
       },
     };
   }
@@ -278,7 +296,7 @@ export function buildConversationPayload(args: {
   return {
     isVideoModel,
     payload: {
-      temporary: settings.temporary ?? true,
+      temporary,
       modelName: grokModel,
       message: content,
       fileAttachments: [...fileIds, ...imgIds],
@@ -297,10 +315,11 @@ export function buildConversationPayload(args: {
       webpageUrls: [],
       disableTextFollowUps: true,
       responseMetadata: { requestModelDetails: { modelId: grokModel } },
-      disableMemory: false,
+      disableMemory,
       forceSideBySide: false,
       modelMode: mode,
       isAsyncChat: false,
+      ...(customPersonality ? { customPersonality } : {}),
     },
   };
 }
@@ -310,12 +329,16 @@ export async function sendConversationRequest(args: {
   cookie: string;
   settings: GrokSettings;
   referer?: string;
+  timeoutMs?: number | null;
 }): Promise<Response> {
-  const { payload, cookie, settings, referer } = args;
+  const { payload, cookie, settings, referer, timeoutMs } = args;
   const headers = getDynamicHeaders(settings, "/rest/app-chat/conversations/new");
   headers.Cookie = cookie;
   if (referer) headers.Referer = referer;
   const body = JSON.stringify(payload);
 
-  return fetch(CONVERSATION_API, { method: "POST", headers, body });
+  return fetch(
+    CONVERSATION_API,
+    withTimeout({ method: "POST", headers, body }, timeoutMs),
+  );
 }

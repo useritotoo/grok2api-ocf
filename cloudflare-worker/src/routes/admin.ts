@@ -341,6 +341,40 @@ function parseBooleanQuery(value: string | undefined, fallback: boolean): boolea
   return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
 }
 
+function resolvePositiveInt(value: unknown, fallback: number): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.max(1, Math.floor(parsed));
+}
+
+async function mapItemsInBatches<T>(
+  items: string[],
+  batchSize: number,
+  concurrency: number,
+  worker: (item: string, index: number) => Promise<T>,
+): Promise<T[]> {
+  const results = new Array<T>(items.length);
+  const safeBatchSize = Math.max(1, Math.min(items.length || 1, batchSize));
+  const safeConcurrency = Math.max(1, Math.min(safeBatchSize, concurrency));
+
+  for (let start = 0; start < items.length; start += safeBatchSize) {
+    const batch = items.slice(start, start + safeBatchSize);
+    let nextIndex = 0;
+    const workers = Array.from({ length: Math.min(safeConcurrency, batch.length) }, async () => {
+      while (nextIndex < batch.length) {
+        const batchIndex = nextIndex;
+        nextIndex += 1;
+        const item = batch[batchIndex];
+        if (!item) continue;
+        results[start + batchIndex] = await worker(item, start + batchIndex);
+      }
+    });
+    await Promise.all(workers);
+  }
+
+  return results;
+}
+
 function paginateOnlineAccounts(
   accounts: OnlineAccountInfo[],
   page: number,
@@ -436,12 +470,18 @@ async function buildCachePayload(
 
   const accountMap = new Map(allAccounts.map((account) => [account.token, account]));
   const settings = await getSettings(env);
+  const assetConfig = settings.current.asset ?? {};
+  const listBatchSize = resolvePositiveInt(assetConfig.list_batch_size, requestedTokens.length || 1);
+  const listConcurrency = Math.min(
+    listBatchSize,
+    resolvePositiveInt(assetConfig.list_concurrent, listBatchSize),
+  );
 
   if (scope === "single") {
     const token = requestedTokens[0]!;
     const account = accountMap.get(token) ?? null;
     try {
-      const detail = await getAssetDetail(token, settings.grok, account);
+      const detail = await getAssetDetail(token, settings.grok, account, assetConfig);
       return {
         ...basePayload,
         online: {
@@ -471,18 +511,20 @@ async function buildCachePayload(
     }
   }
 
-  const details: OnlineAssetDetail[] = [];
-  let total = 0;
-  for (const token of requestedTokens) {
-    const account = accountMap.get(token) ?? null;
-    try {
-      const detail = await getAssetDetail(token, settings.grok, account);
-      details.push(detail);
-      total += detail.count;
-    } catch (error) {
-      details.push(buildOnlineErrorDetail(token, account, error));
-    }
-  }
+  const details = await mapItemsInBatches(
+    requestedTokens,
+    listBatchSize,
+    listConcurrency,
+    async (token) => {
+      const account = accountMap.get(token) ?? null;
+      try {
+        return await getAssetDetail(token, settings.grok, account, assetConfig);
+      } catch (error) {
+        return buildOnlineErrorDetail(token, account, error);
+      }
+    },
+  );
+  const total = details.reduce((sum, detail) => sum + detail.count, 0);
 
   return {
     ...basePayload,
@@ -504,6 +546,12 @@ async function runOnlineCacheLoadBatch(
   requestedTokens: string[],
 ): Promise<void> {
   const settings = await getSettings(env);
+  const assetConfig = settings.current.asset ?? {};
+  const listBatchSize = resolvePositiveInt(assetConfig.list_batch_size, requestedTokens.length || 1);
+  const listConcurrency = Math.min(
+    listBatchSize,
+    resolvePositiveInt(assetConfig.list_concurrent, listBatchSize),
+  );
   const stats = await getKvStats(env.DB);
   const accounts = await getOnlineAccounts(env);
   const accountMap = new Map(accounts.map((account) => [account.token, account]));
@@ -513,25 +561,48 @@ async function runOnlineCacheLoadBatch(
   let failed = 0;
   let total = 0;
 
-  for (const token of requestedTokens) {
+  for (let start = 0; start < requestedTokens.length; start += listBatchSize) {
     if (await isBatchTaskCancelled(env.DB, taskId)) {
       await finishBatchTask(env.DB, taskId, { status: "cancelled", processed, success, failed });
       return;
     }
 
-    const account = accountMap.get(token) ?? null;
-    try {
-      const detail = await getAssetDetail(token, settings.grok, account);
-      details.push(detail);
-      total += detail.count;
-      success += 1;
-    } catch (error) {
-      details.push(buildOnlineErrorDetail(token, account, error));
-      failed += 1;
-    }
+    const batch = requestedTokens.slice(start, start + listBatchSize);
+    let nextIndex = 0;
+    let cancelled = false;
 
-    processed += 1;
-    await updateBatchTaskProgress(env.DB, taskId, { processed, success, failed });
+    const workers = Array.from({ length: Math.min(listConcurrency, batch.length) }, async () => {
+      while (nextIndex < batch.length) {
+        const currentIndex = nextIndex;
+        nextIndex += 1;
+        const token = batch[currentIndex];
+        if (!token) continue;
+        if (await isBatchTaskCancelled(env.DB, taskId)) {
+          cancelled = true;
+          return;
+        }
+
+        const account = accountMap.get(token) ?? null;
+        try {
+          const detail = await getAssetDetail(token, settings.grok, account, assetConfig);
+          details[start + currentIndex] = detail;
+          total += detail.count;
+          success += 1;
+        } catch (error) {
+          details[start + currentIndex] = buildOnlineErrorDetail(token, account, error);
+          failed += 1;
+        }
+
+        processed += 1;
+        await updateBatchTaskProgress(env.DB, taskId, { processed, success, failed });
+      }
+    });
+
+    await Promise.all(workers);
+    if (cancelled) {
+      await finishBatchTask(env.DB, taskId, { status: "cancelled", processed, success, failed });
+      return;
+    }
   }
 
   await finishBatchTask(env.DB, taskId, {
@@ -561,30 +632,35 @@ async function runOnlineCacheClearBatch(
   requestedTokens: string[],
 ): Promise<void> {
   const settings = await getSettings(env);
+  const assetConfig = settings.current.asset ?? {};
+  const deleteBatchSize = resolvePositiveInt(assetConfig.delete_batch_size, requestedTokens.length || 1);
   const results: Record<string, Record<string, unknown>> = {};
   let processed = 0;
   let success = 0;
   let failed = 0;
 
-  for (const token of requestedTokens) {
+  for (let start = 0; start < requestedTokens.length; start += deleteBatchSize) {
     if (await isBatchTaskCancelled(env.DB, taskId)) {
       await finishBatchTask(env.DB, taskId, { status: "cancelled", processed, success, failed });
       return;
     }
 
-    try {
-      const result = await clearAssetsForToken(token, settings.grok);
-      await updateTokenAssetClearAt(env.DB, token, Date.now());
-      results[token] = { status: "success", result };
-      success += 1;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      results[token] = { status: "error", error: message };
-      failed += 1;
-    }
+    const batch = requestedTokens.slice(start, start + deleteBatchSize);
+    await Promise.all(batch.map(async (token) => {
+      try {
+        const result = await clearAssetsForToken(token, settings.grok, assetConfig);
+        await updateTokenAssetClearAt(env.DB, token, Date.now());
+        results[token] = { status: "success", result };
+        success += 1;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        results[token] = { status: "error", error: message };
+        failed += 1;
+      }
 
-    processed += 1;
-    await updateBatchTaskProgress(env.DB, taskId, { processed, success, failed });
+      processed += 1;
+      await updateBatchTaskProgress(env.DB, taskId, { processed, success, failed });
+    }));
   }
 
   await finishBatchTask(env.DB, taskId, {
@@ -1114,15 +1190,16 @@ adminRoutes.post("/api/v1/admin/tokens/refresh", requireAdminAuth, async (c) => 
     const tokenTypeByToken = new Map(typeRows.map((r) => [r.token, r.token_type]));
 
     const results: Record<string, boolean> = {};
+    const usageTimeout = Number(settings.current.usage?.timeout ?? 60);
     for (const t of unique) {
       try {
         const cookie = buildSsoCookie(t, settings.grok);
         const tokenType = tokenTypeByToken.get(t) ?? "sso";
-        const r = await checkRateLimits(cookie, settings.grok, "grok-4");
+        const r = await checkRateLimits(cookie, settings.grok, "grok-4", usageTimeout);
         const remaining = (r as any)?.remainingTokens;
         let heavyRemaining: number | null = null;
         if (tokenType === "ssoSuper") {
-          const rh = await checkRateLimits(cookie, settings.grok, "grok-4-heavy");
+          const rh = await checkRateLimits(cookie, settings.grok, "grok-4-heavy", usageTimeout);
           const hv = (rh as any)?.remainingTokens;
           if (typeof hv === "number") heavyRemaining = hv;
         }
@@ -1239,25 +1316,38 @@ adminRoutes.post("/api/v1/admin/cache/online/clear", requireAdminAuth, async (c)
     }
 
     const settings = await getSettings(c.env);
+    const assetConfig = settings.current.asset ?? {};
+    const deleteBatchSize = resolvePositiveInt(assetConfig.delete_batch_size, requestedTokens.length || 1);
 
     if (requestedTokens.length > 1) {
       const results: Record<string, Record<string, unknown>> = {};
+      await mapItemsInBatches(
+        requestedTokens,
+        deleteBatchSize,
+        deleteBatchSize,
+        async (requestedToken) => {
+          try {
+            const result = await clearAssetsForToken(requestedToken, settings.grok, assetConfig);
+            await updateTokenAssetClearAt(c.env.DB, requestedToken, Date.now());
+            results[requestedToken] = { status: "success", result };
+          } catch (error) {
+            results[requestedToken] = {
+              status: "error",
+              error: error instanceof Error ? error.message : String(error),
+            };
+          }
+          return null;
+        },
+      );
       for (const requestedToken of requestedTokens) {
-        try {
-          const result = await clearAssetsForToken(requestedToken, settings.grok);
-          await updateTokenAssetClearAt(c.env.DB, requestedToken, Date.now());
-          results[requestedToken] = { status: "success", result };
-        } catch (error) {
-          results[requestedToken] = {
-            status: "error",
-            error: error instanceof Error ? error.message : String(error),
-          };
+        if (!(requestedToken in results)) {
+          results[requestedToken] = { status: "error", error: "Token not processed" };
         }
       }
       return c.json({ status: "success", results });
     }
 
-    const result = await clearAssetsForToken(requestedTokens[0]!, settings.grok);
+    const result = await clearAssetsForToken(requestedTokens[0]!, settings.grok, assetConfig);
     await updateTokenAssetClearAt(c.env.DB, requestedTokens[0]!, Date.now());
     return c.json({ status: "success", result });
   } catch (e) {
@@ -1492,17 +1582,18 @@ adminRoutes.post("/api/tokens/test", requireAdminAuth, async (c) => {
     const token_type = validateTokenType(String(body.token_type ?? ""));
     const token = String(body.token ?? "");
     const settings = await getSettings(c.env);
+    const usageTimeout = Number(settings.current.usage?.timeout ?? 60);
 
     const cookie = buildSsoCookie(token, settings.grok);
 
-    const result = await checkRateLimits(cookie, settings.grok, "grok-4");
+    const result = await checkRateLimits(cookie, settings.grok, "grok-4", usageTimeout);
     if (result) {
       const remaining = (result as any).remainingTokens ?? -1;
       const limit = (result as any).limit ?? -1;
 
       let heavyRemaining: number | null = null;
       if (token_type === "ssoSuper") {
-        const heavy = await checkRateLimits(cookie, settings.grok, "grok-4-heavy");
+        const heavy = await checkRateLimits(cookie, settings.grok, "grok-4-heavy", usageTimeout);
         const v = (heavy as any)?.remainingTokens;
         if (typeof v === "number") heavyRemaining = v;
       }
@@ -1578,6 +1669,7 @@ adminRoutes.post("/api/tokens/refresh-all", requireAdminAuth, async (c) => {
     });
 
     const settings = await getSettings(c.env);
+    const usageTimeout = Number(settings.current.usage?.timeout ?? 60);
 
     c.executionCtx.waitUntil(
       (async () => {
@@ -1586,12 +1678,12 @@ adminRoutes.post("/api/tokens/refresh-all", requireAdminAuth, async (c) => {
         for (let i = 0; i < tokens.length; i++) {
           const t = tokens[i]!;
           const cookie = buildSsoCookie(t.token, settings.grok);
-          const r = await checkRateLimits(cookie, settings.grok, "grok-4");
+          const r = await checkRateLimits(cookie, settings.grok, "grok-4", usageTimeout);
           if (r) {
             const remaining = (r as any).remainingTokens;
             let heavyRemaining: number | null = null;
             if (t.token_type === "ssoSuper") {
-              const rh = await checkRateLimits(cookie, settings.grok, "grok-4-heavy");
+              const rh = await checkRateLimits(cookie, settings.grok, "grok-4-heavy", usageTimeout);
               const hv = (rh as any)?.remainingTokens;
               if (typeof hv === "number") heavyRemaining = hv;
             }

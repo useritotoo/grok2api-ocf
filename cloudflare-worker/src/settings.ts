@@ -1,5 +1,5 @@
 import { dbFirst, dbRun } from "./db";
-import { DEFAULT_CURRENT_CONFIG, getCurrentConfig, normalizeApiKeyList } from "./currentConfig";
+import { DEFAULT_CURRENT_CONFIG, getCurrentConfig, normalizeApiKeyList, type CurrentConfig } from "./currentConfig";
 import type { Env } from "./env";
 import { nowMs } from "./utils/time";
 
@@ -29,6 +29,8 @@ export interface GrokSettings {
   filtered_tags?: string;
   show_thinking?: boolean;
   temporary?: boolean;
+  disable_memory?: boolean;
+  custom_instruction?: string;
   video_poster_preview?: boolean;
   stream_first_response_timeout?: number;
   stream_chunk_timeout?: number;
@@ -76,6 +78,7 @@ export interface RegisterSettings {
 }
 
 export interface SettingsBundle {
+  current: CurrentConfig;
   global: Required<GlobalSettings>;
   grok: Required<GrokSettings>;
   token: Required<TokenSettings>;
@@ -85,6 +88,7 @@ export interface SettingsBundle {
 }
 
 const DEFAULTS: SettingsBundle = {
+  current: DEFAULT_CURRENT_CONFIG,
   global: {
     base_url: "",
     log_level: "INFO",
@@ -110,6 +114,8 @@ const DEFAULTS: SettingsBundle = {
     filtered_tags: "xaiartifact,xai:tool_usage_card",
     show_thinking: true,
     temporary: false,
+    disable_memory: Boolean(DEFAULT_CURRENT_CONFIG.app.disable_memory ?? false),
+    custom_instruction: String(DEFAULT_CURRENT_CONFIG.app.custom_instruction ?? ""),
     video_poster_preview: false,
     stream_first_response_timeout: 30,
     stream_chunk_timeout: 120,
@@ -392,6 +398,10 @@ export async function getSettings(env: Env): Promise<SettingsBundle> {
     : String(DEFAULT_CURRENT_CONFIG.app.filter_tags ?? DEFAULTS.grok.filtered_tags);
   const defaultShowThinking = Boolean(DEFAULT_CURRENT_CONFIG.app.thinking ?? DEFAULTS.grok.show_thinking);
   const defaultTemporary = Boolean(DEFAULT_CURRENT_CONFIG.app.temporary ?? DEFAULTS.grok.temporary);
+  const defaultDisableMemory = Boolean(DEFAULT_CURRENT_CONFIG.app.disable_memory ?? DEFAULTS.grok.disable_memory);
+  const defaultCustomInstruction = String(
+    DEFAULT_CURRENT_CONFIG.app.custom_instruction ?? DEFAULTS.grok.custom_instruction,
+  );
   const defaultRetryStatusCodes = normalizeStatusCodeList(
     DEFAULT_CURRENT_CONFIG.retry.retry_status_codes,
     DEFAULTS.grok.retry_status_codes,
@@ -414,6 +424,8 @@ export async function getSettings(env: Env): Promise<SettingsBundle> {
     : String(appCfg.filter_tags ?? DEFAULTS.grok.filtered_tags);
   const currentShowThinking = Boolean(appCfg.thinking ?? DEFAULTS.grok.show_thinking);
   const currentTemporary = Boolean(appCfg.temporary ?? DEFAULTS.grok.temporary);
+  const currentDisableMemory = Boolean(appCfg.disable_memory ?? DEFAULTS.grok.disable_memory);
+  const currentCustomInstruction = String(appCfg.custom_instruction ?? DEFAULTS.grok.custom_instruction);
   const currentStreamChunkTimeout = Number(chatCfg.stream_timeout ?? DEFAULTS.grok.stream_chunk_timeout);
   const currentRetryStatusCodes = normalizeStatusCodeList(
     retryCfg.retry_status_codes,
@@ -498,6 +510,18 @@ export async function getSettings(env: Env): Promise<SettingsBundle> {
       defaultShowThinking,
     ),
     temporary: resolveSectionBoolean(appUsesCurrentConfig, currentTemporary, legacyGrokCfg.temporary, defaultTemporary),
+    disable_memory: resolveSectionBoolean(
+      appUsesCurrentConfig,
+      currentDisableMemory,
+      legacyGrokCfg.disable_memory,
+      defaultDisableMemory,
+    ),
+    custom_instruction: resolveSectionString(
+      appUsesCurrentConfig,
+      currentCustomInstruction,
+      legacyGrokCfg.custom_instruction,
+      defaultCustomInstruction,
+    ),
     video_poster_preview: preferLegacyBoolean(
       DEFAULTS.grok.video_poster_preview,
       legacyGrokCfg.video_poster_preview,
@@ -562,6 +586,7 @@ export async function getSettings(env: Env): Promise<SettingsBundle> {
     : DEFAULTS.register;
 
   return {
+    current,
     global: { ...DEFAULTS.global, ...globalCfg },
     grok: mergedGrok,
     token: { ...DEFAULTS.token, ...tokenCfg },

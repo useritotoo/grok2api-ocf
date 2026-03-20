@@ -335,6 +335,213 @@ test("chat completions forward current cf_cookies when proxy section provides a 
   assert.match(capturedCookie, /cf_clearance=jar-clearance/);
 });
 
+test("chat completions forward current disable_memory and custom_instruction into the Grok payload", async () => {
+  let capturedPayload: Record<string, unknown> | null = null;
+
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url === "https://grok.com/rest/app-chat/conversations/new") {
+      capturedPayload = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+      return new Response(
+        `${JSON.stringify({
+          result: {
+            response: {
+              modelResponse: {
+                model: "grok-4",
+                message: "payload config ok",
+              },
+            },
+          },
+        })}\n`,
+        {
+          status: 200,
+          headers: { "content-type": "application/x-ndjson" },
+        },
+      );
+    }
+    return originalFetch(input, init);
+  }) as typeof fetch;
+
+  const response = await (worker.fetch as any)(
+    new Request("https://example.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "grok-4",
+        stream: false,
+        messages: [{ role: "user", content: "hello" }],
+      }),
+    }),
+    createEnv({
+      app: {
+        disable_memory: true,
+        custom_instruction: "Always answer with terse bullet points.",
+      },
+    }),
+    createExecutionContext(),
+  );
+
+  assert.equal(response.status, 200);
+  assert.ok(capturedPayload);
+  assert.equal(capturedPayload["disableMemory"], true);
+  assert.equal(capturedPayload["customPersonality"], "Always answer with terse bullet points.");
+});
+
+test("chat completions respect current retry.max_retry instead of always retrying three times", async () => {
+  let attempts = 0;
+
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url === "https://grok.com/rest/app-chat/conversations/new") {
+      attempts += 1;
+      return new Response("upstream failure", {
+        status: 500,
+        headers: { "content-type": "text/plain; charset=utf-8" },
+      });
+    }
+    return originalFetch(input, init);
+  }) as typeof fetch;
+
+  const response = await (worker.fetch as any)(
+    new Request("https://example.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "grok-4",
+        stream: false,
+        messages: [{ role: "user", content: "hello" }],
+      }),
+    }),
+    createEnv({
+      retry: {
+        max_retry: 0,
+        retry_status_codes: [500],
+      },
+    }),
+    createExecutionContext(),
+  );
+
+  assert.equal(response.status, 500);
+  assert.equal(attempts, 1);
+});
+
+test("chat completions default to current app.stream when request.stream is omitted", async () => {
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url === "https://grok.com/rest/app-chat/conversations/new") {
+      return new Response(
+        `${JSON.stringify({
+          result: {
+            response: {
+              token: "streamed by config",
+              isThinking: false,
+            },
+          },
+        })}\n`,
+        {
+          status: 200,
+          headers: { "content-type": "application/x-ndjson" },
+        },
+      );
+    }
+    return originalFetch(input, init);
+  }) as typeof fetch;
+
+  const response = await (worker.fetch as any)(
+    new Request("https://example.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "grok-4",
+        messages: [{ role: "user", content: "hello" }],
+      }),
+    }),
+    createEnv({
+      app: {
+        stream: true,
+      },
+    }),
+    createExecutionContext(),
+  );
+
+  assert.equal(response.status, 200);
+  assert.match(String(response.headers.get("content-type") ?? ""), /text\/event-stream/i);
+  const bodyText = await response.text();
+  assert.match(bodyText, /streamed by config/);
+});
+
+test("video chat completions respect current app.video_format when configured as url", async () => {
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url === "https://grok.com/rest/media/post/create") {
+      return new Response(JSON.stringify({ post: { id: "legacy-video-post" } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url === "https://grok.com/rest/app-chat/conversations/new") {
+      return new Response(
+        `${JSON.stringify({
+          result: {
+            response: {
+              streamingVideoGenerationResponse: {
+                progress: 100,
+                videoUrl:
+                  "https://assets.grok.com/generated/12345678-1234-1234-1234-1234567890ab/generated_video.mp4",
+              },
+            },
+          },
+        })}\n`,
+        {
+          status: 200,
+          headers: { "content-type": "application/x-ndjson" },
+        },
+      );
+    }
+    return originalFetch(input, init);
+  }) as typeof fetch;
+
+  const response = await (worker.fetch as any)(
+    new Request("https://example.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "grok-imagine-1.0-video",
+        stream: false,
+        messages: [{ role: "user", content: "Create a skyline timelapse" }],
+        video_config: {
+          aspect_ratio: "16:9",
+          video_length: 6,
+          resolution_name: "480p",
+          preset: "normal",
+        },
+      }),
+    }),
+    createEnv({
+      app: {
+        video_format: "url",
+      },
+    }),
+    createExecutionContext(),
+  );
+
+  assert.equal(response.status, 200);
+  const payload = (await response.json()) as {
+    choices: Array<{ message?: { content?: string } }>;
+  };
+  const content = String(payload.choices[0]?.message?.content ?? "").trim();
+  assert.doesNotMatch(content, /<video/i);
+  assert.match(content, /^https:\/\/example\.com\/images\//);
+});
+
 test("chat completions replace cf_clearance inside current cookie jar when manual cf_clearance is configured", async () => {
   let capturedCookie = "";
 

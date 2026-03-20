@@ -2,6 +2,7 @@ import type { GrokSettings } from "../settings";
 import { getDynamicHeaders } from "./headers";
 
 const VIDEO_UPSCALE_API = "https://grok.com/rest/media/video/upscale";
+const VIDEO_PUBLIC_LINK_API = "https://grok.com/rest/media/post/create-link";
 const POST_ID_URL_PATTERNS = [
   /\/generated\/([0-9a-fA-F-]{32,36})\//,
   /\/([0-9a-fA-F-]{32,36})\/generated_video/,
@@ -187,4 +188,57 @@ export async function upscaleVideoUrl(args: {
   }
 
   return result;
+}
+
+export async function publicizeVideoUrl(args: {
+  videoUrl: string;
+  cookie: string;
+  settings: GrokSettings;
+}): Promise<{ videoUrl: string; publicAsset: boolean }> {
+  const videoId = extractVideoId(args.videoUrl);
+  if (!videoId) {
+    return { videoUrl: args.videoUrl, publicAsset: false };
+  }
+
+  try {
+    const headers = getDynamicHeaders(args.settings, "/rest/media/post/create-link");
+    headers.Cookie = args.cookie;
+    headers.Referer = "https://grok.com/imagine";
+
+    const response = await fetch(VIDEO_PUBLIC_LINK_API, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        postId: videoId,
+        source: "post-page",
+        platform: "web",
+      }),
+    });
+    if (!response.ok) {
+      console.warn(`Video public link failed with status ${response.status}`);
+      return { videoUrl: args.videoUrl, publicAsset: false };
+    }
+
+    const payload = (await response.json().catch(() => ({}))) as {
+      shareLink?: unknown;
+    };
+    const shareLink = String(payload.shareLink ?? "").trim();
+    if (!shareLink) {
+      return { videoUrl: args.videoUrl, publicAsset: false };
+    }
+
+    if (shareLink.endsWith(".mp4")) {
+      return { videoUrl: shareLink, publicAsset: true };
+    }
+
+    return {
+      videoUrl: `https://imagine-public.x.ai/imagine-public/share-videos/${videoId}.mp4?cache=1`,
+      publicAsset: true,
+    };
+  } catch (error) {
+    console.warn(
+      `Video public link request failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return { videoUrl: args.videoUrl, publicAsset: false };
+  }
 }
