@@ -7,15 +7,30 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+function resolveStreamReadTimeoutMs(value: unknown): number | null {
+  const seconds = Number(value);
+  if (!Number.isFinite(seconds) || seconds <= 0) return null;
+  return Math.max(1, Math.floor(seconds * 1000));
+}
+
 async function readWithTimeout(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   ms: number,
 ): Promise<ReadableStreamReadResult<Uint8Array> | { timeout: true }> {
   if (ms <= 0) return { timeout: true };
-  return Promise.race([
-    reader.read(),
-    sleep(ms).then(() => ({ timeout: true }) as const),
-  ]);
+  return await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => resolve({ timeout: true } as const), ms);
+    reader.read().then(
+      (result) => {
+        clearTimeout(timer);
+        resolve(result);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
 }
 
 function makeChunk(
@@ -682,6 +697,7 @@ export async function parseOpenAiFromGrokNdjson(
   },
 ): Promise<Record<string, unknown>> {
   const { global, origin, requestedModel, settings } = opts;
+  const readTimeoutMs = resolveStreamReadTimeoutMs(settings.stream_chunk_timeout);
 
   let content = "";
   let model = requestedModel;
@@ -737,7 +753,7 @@ export async function parseOpenAiFromGrokNdjson(
 
     if (Array.isArray(rawUrls)) return false;
     return true;
-  });
+  }, { readTimeoutMs });
 
   return {
     id: `chatcmpl-${crypto.randomUUID()}`,

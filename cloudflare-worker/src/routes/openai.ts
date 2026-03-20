@@ -10,7 +10,7 @@ import {
   prepareVideoReferencePrompt,
   sendConversationRequest,
 } from "../grok/conversation";
-import { uploadAttachment, uploadImage } from "../grok/upload";
+import { uploadAttachment, uploadImage, type AssetTransferConfig } from "../grok/upload";
 import { getDynamicHeaders } from "../grok/headers";
 import { createMediaPost } from "../grok/create";
 import { createOpenAiStreamFromGrokNdjson, parseOpenAiFromGrokNdjson } from "../grok/processor";
@@ -221,6 +221,34 @@ function resolveTimeoutMs(value: unknown, fallbackSeconds: number): number | nul
   return Math.max(1_000, Math.floor(safeSeconds * 1000));
 }
 
+function resolveIdleTimeoutSeconds(value: unknown): number | null {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  return parsed;
+}
+
+function resolveIdleTimeoutMs(value: unknown): number | null {
+  const seconds = resolveIdleTimeoutSeconds(value);
+  if (seconds === null) return null;
+  return Math.max(1, Math.floor(seconds * 1000));
+}
+
+function resolveConcurrencyLimit(value: unknown, fallback: number): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return Math.max(1, Math.floor(fallback || 1));
+  return Math.max(1, Math.floor(parsed));
+}
+
+function buildAssetTransferConfig(
+  current: Awaited<ReturnType<typeof getSettings>>["current"],
+): AssetTransferConfig {
+  const asset = current.asset ?? {};
+  return {
+    upload_timeout: asset.upload_timeout,
+    download_timeout: asset.download_timeout,
+  };
+}
+
 function computeRetryDelayMs(args: {
   attempt: number;
   status: number;
@@ -241,6 +269,47 @@ function computeRetryDelayMs(args: {
 async function sleep(ms: number): Promise<void> {
   if (ms <= 0) return;
   await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function readWithTimeout(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  timeoutMs?: number | null,
+): Promise<ReadableStreamReadResult<Uint8Array> | { timeout: true }> {
+  const normalizedTimeoutMs = Number(timeoutMs);
+  if (!Number.isFinite(normalizedTimeoutMs) || normalizedTimeoutMs <= 0) {
+    return reader.read();
+  }
+  return await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => resolve({ timeout: true } as const), normalizedTimeoutMs);
+    reader.read().then(
+      (result) => {
+        clearTimeout(timer);
+        resolve(result);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
+export function resolveConversationStreamSettings(args: {
+  requestedModel: string;
+  current: Awaited<ReturnType<typeof getSettings>>["current"];
+  grok: Awaited<ReturnType<typeof getSettings>>["grok"];
+}): Awaited<ReturnType<typeof getSettings>>["grok"] {
+  const resolved = { ...args.grok };
+  const modelConfig = MODEL_CONFIG[args.requestedModel];
+  const overrideSeconds = modelConfig?.is_video_model
+    ? resolveIdleTimeoutSeconds(args.current.video?.stream_timeout)
+    : resolveIdleTimeoutSeconds(args.current.chat?.stream_timeout);
+
+  if (overrideSeconds !== null) {
+    resolved.stream_chunk_timeout = overrideSeconds;
+  }
+
+  return resolved;
 }
 
 function quotaError(bucket: string): Record<string, unknown> {
@@ -431,6 +500,7 @@ async function fetchImageAsBase64(args: {
   rawUrl: string;
   cookie: string;
   settings: Awaited<ReturnType<typeof getSettings>>["grok"];
+  timeoutMs?: number | null;
 }): Promise<string> {
   let url: URL;
   try {
@@ -449,7 +519,15 @@ async function fetchImageAsBase64(args: {
   headers["Sec-Fetch-Site"] = "same-site";
   headers.Referer = "https://grok.com/";
 
-  const resp = await fetch(url.toString(), { method: "GET", headers, redirect: "follow" });
+  const resp = await fetch(
+    url.toString(),
+    args.timeoutMs !== null
+      && args.timeoutMs !== undefined
+      && typeof AbortSignal !== "undefined"
+      && typeof AbortSignal.timeout === "function"
+      ? { method: "GET", headers, redirect: "follow", signal: AbortSignal.timeout(args.timeoutMs) }
+      : { method: "GET", headers, redirect: "follow" },
+  );
   if (!resp.ok) {
     const txt = await resp.text().catch(() => "");
     throw new Error(`Image download failed: ${resp.status} ${txt.slice(0, 200)}`);
@@ -464,12 +542,18 @@ async function convertRawUrlByFormat(
     baseUrl: string;
     cookie: string;
     settings: Awaited<ReturnType<typeof getSettings>>["grok"];
+    downloadTimeoutMs?: number | null;
   },
 ): Promise<string> {
   if (responseFormat === "url") {
     return toProxyUrl(args.baseUrl, encodeAssetPath(rawUrl));
   }
-  return fetchImageAsBase64({ rawUrl, cookie: args.cookie, settings: args.settings });
+  return fetchImageAsBase64({
+    rawUrl,
+    cookie: args.cookie,
+    settings: args.settings,
+    timeoutMs: args.downloadTimeoutMs,
+  });
 }
 
 async function convertImagineFrameByFormat(
@@ -479,6 +563,7 @@ async function convertImagineFrameByFormat(
     baseUrl: string;
     cookie: string;
     settings: Awaited<ReturnType<typeof getSettings>>["grok"];
+    downloadTimeoutMs?: number | null;
   },
 ): Promise<string> {
   if (responseFormat === "url") {
@@ -487,10 +572,19 @@ async function convertImagineFrameByFormat(
   if (asset.blob) {
     return asset.blob;
   }
-  return fetchImageAsBase64({ rawUrl: asset.url, cookie: args.cookie, settings: args.settings });
+  return fetchImageAsBase64({
+    rawUrl: asset.url,
+    cookie: args.cookie,
+    settings: args.settings,
+    timeoutMs: args.downloadTimeoutMs,
+  });
 }
 
-async function collectImageUrls(resp: Response, maxResults = Number.POSITIVE_INFINITY): Promise<string[]> {
+async function collectImageUrls(
+  resp: Response,
+  maxResults = Number.POSITIVE_INFINITY,
+  readTimeoutMs?: number | null,
+): Promise<string[]> {
   const allUrls: string[] = [];
   await consumeNdjsonObjects(resp, async (data) => {
     const err = (data as { error?: { message?: unknown } }).error;
@@ -499,7 +593,7 @@ async function collectImageUrls(resp: Response, maxResults = Number.POSITIVE_INF
     const urls = normalizeGeneratedImageUrls(grok?.modelResponse?.generatedImageUrls);
     if (urls.length) allUrls.push(...urls);
     return allUrls.length >= maxResults;
-  });
+  }, { readTimeoutMs });
   return allUrls;
 }
 
@@ -594,13 +688,15 @@ function buildImageSse(event: string, data: Record<string, unknown>): string {
   return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
 }
 
-function createImageEventStream(args: {
+export function createImageEventStream(args: {
   upstream: Response;
   responseFormat: ImageResponseFormat;
   baseUrl: string;
   cookie: string;
   settings: Awaited<ReturnType<typeof getSettings>>["grok"];
   n: number;
+  streamTimeoutMs?: number | null;
+  downloadTimeoutMs?: number | null;
   onFinish?: (result: { status: number; duration: number }) => Promise<void> | void;
 }): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
@@ -626,7 +722,11 @@ function createImageEventStream(args: {
       let failed = false;
       try {
         while (true) {
-          const { value, done } = await reader.read();
+          const readResult = await readWithTimeout(reader, args.streamTimeoutMs);
+          if ("timeout" in readResult) {
+            break;
+          }
+          const { value, done } = readResult;
           if (done) break;
           if (!value) continue;
           buffer += decoder.decode(value, { stream: true });
@@ -679,6 +779,7 @@ function createImageEventStream(args: {
                   baseUrl: args.baseUrl,
                   cookie: args.cookie,
                   settings: args.settings,
+                  downloadTimeoutMs: args.downloadTimeoutMs,
                 });
                 finalImages.push(converted);
               }
@@ -803,6 +904,9 @@ async function runImageCall(args: {
   responseFormat: ImageResponseFormat;
   baseUrl: string;
   timeoutMs?: number | null;
+  streamTimeoutMs?: number | null;
+  downloadConcurrency?: number;
+  downloadTimeoutMs?: number | null;
 }): Promise<string[]> {
   const { payload, referer } = buildConversationPayload({
     requestModel: args.requestModel,
@@ -823,15 +927,17 @@ async function runImageCall(args: {
     const txt = await upstream.text().catch(() => "");
     throw new Error(`Upstream ${upstream.status}: ${txt.slice(0, 200)}`);
   }
-  const rawUrls = await collectImageUrls(upstream, 2);
-  const converted = await Promise.all(
-    rawUrls.map((rawUrl) =>
+  const rawUrls = await collectImageUrls(upstream, 2, args.streamTimeoutMs);
+  const converted = await mapLimit(
+    rawUrls,
+    Math.min(rawUrls.length || 1, resolveConcurrencyLimit(args.downloadConcurrency, rawUrls.length || 1)),
+    async (rawUrl) =>
       convertRawUrlByFormat(rawUrl, args.responseFormat, {
         baseUrl: args.baseUrl,
         cookie: args.cookie,
         settings: args.settings,
+        downloadTimeoutMs: args.downloadTimeoutMs,
       }),
-    ),
   );
   return converted.filter(Boolean);
 }
@@ -865,7 +971,7 @@ function imageGenerationMethod(settingsBundle: Awaited<ReturnType<typeof getSett
   return resolveImageGenerationMethod(settingsBundle.grok.image_generation_method);
 }
 
-async function collectExperimentalGenerationImages(args: {
+export async function collectExperimentalGenerationImages(args: {
   prompt: string;
   n: number;
   cookie: string;
@@ -875,30 +981,112 @@ async function collectExperimentalGenerationImages(args: {
   aspectRatio: string;
   concurrency: number;
   timeoutMs?: number | null;
+  streamTimeoutMs?: number | null;
+  finalTimeoutMs?: number | null;
+  blockedGraceMs?: number | null;
+  enableNsfw?: boolean;
+  finalMinBytes?: number;
+  mediumMinBytes?: number;
+  blockedParallelAttempts?: number;
+  blockedParallelEnabled?: boolean;
+  downloadConcurrency?: number;
+  downloadTimeoutMs?: number | null;
 }): Promise<string[]> {
   void args.concurrency;
-  const images = await collectImagineWsImages({
-    prompt: args.prompt,
-    n: Math.max(1, args.n),
-    cookie: args.cookie,
-    settings: args.settings,
-    timeoutMs: args.timeoutMs ?? undefined,
-    aspectRatio: args.aspectRatio,
-  });
-  if (!images.length) {
-    throw new Error("Experimental imagine websocket returned no images");
+  const targetCount = Math.max(1, args.n);
+  const attemptCount = Math.max(0, Math.floor(Number(args.blockedParallelAttempts ?? 0) || 0));
+  const parallelEnabled = args.blockedParallelEnabled !== false;
+  const mergedResults: string[] = [];
+  const seen = new Set<string>();
+
+  const collectOnce = async (): Promise<string[]> => {
+    const images = await collectImagineWsImages({
+      prompt: args.prompt,
+      n: targetCount,
+      cookie: args.cookie,
+      settings: args.settings,
+      timeoutMs: args.timeoutMs ?? undefined,
+      streamTimeoutMs: args.streamTimeoutMs ?? undefined,
+      finalTimeoutMs: args.finalTimeoutMs ?? undefined,
+      blockedGraceMs: args.blockedGraceMs ?? undefined,
+      aspectRatio: args.aspectRatio,
+      enableNsfw: args.enableNsfw,
+      finalMinBytes: args.finalMinBytes,
+      mediumMinBytes: args.mediumMinBytes,
+    });
+    if (!images.length) {
+      throw new Error("Experimental imagine websocket returned no images");
+    }
+
+    const converted = await mapLimit(
+      images,
+      Math.min(images.length || 1, resolveConcurrencyLimit(args.downloadConcurrency, images.length || 1)),
+      async (image) =>
+        convertImagineFrameByFormat(image, args.responseFormat, {
+          baseUrl: args.baseUrl,
+          cookie: args.cookie,
+          settings: args.settings,
+          downloadTimeoutMs: args.downloadTimeoutMs,
+        }),
+    );
+    return dedupeImages(converted.filter(Boolean));
+  };
+
+  const mergeResults = (values: string[]) => {
+    for (const value of values) {
+      if (!value || seen.has(value)) continue;
+      seen.add(value);
+      mergedResults.push(value);
+      if (mergedResults.length >= targetCount) break;
+    }
+  };
+
+  let lastError: unknown = null;
+  try {
+    mergeResults(await collectOnce());
+  } catch (error) {
+    lastError = error;
   }
 
-  const converted = await Promise.all(
-    images.map((image) =>
-      convertImagineFrameByFormat(image, args.responseFormat, {
-        baseUrl: args.baseUrl,
-        cookie: args.cookie,
-        settings: args.settings,
-      }),
-    ),
-  );
-  return dedupeImages(converted.filter(Boolean));
+  if (mergedResults.length >= targetCount) {
+    return mergedResults.slice(0, targetCount);
+  }
+
+  if (attemptCount > 0) {
+    const attemptFactories = Array.from({ length: attemptCount }, () => collectOnce);
+    const recoveryResults = parallelEnabled
+      ? await Promise.allSettled(attemptFactories.map((run) => run()))
+      : await (async () => {
+          const sequential: PromiseSettledResult<string[]>[] = [];
+          for (const run of attemptFactories) {
+            try {
+              sequential.push({ status: "fulfilled", value: await run() });
+            } catch (error) {
+              sequential.push({ status: "rejected", reason: error });
+            }
+            if (mergedResults.length >= targetCount) break;
+          }
+          return sequential;
+        })();
+
+    for (const result of recoveryResults) {
+      if (result.status === "fulfilled") {
+        mergeResults(result.value);
+        if (mergedResults.length >= targetCount) {
+          return mergedResults.slice(0, targetCount);
+        }
+      } else if (!lastError) {
+        lastError = result.reason;
+      }
+    }
+  }
+
+  if (mergedResults.length >= targetCount) {
+    return mergedResults.slice(0, targetCount);
+  }
+
+  if (lastError) throw lastError;
+  throw new Error("Experimental imagine websocket returned insufficient images");
 }
 
 async function runExperimentalImageEditCall(args: {
@@ -909,6 +1097,9 @@ async function runExperimentalImageEditCall(args: {
   responseFormat: ImageResponseFormat;
   baseUrl: string;
   timeoutMs?: number | null;
+  streamTimeoutMs?: number | null;
+  downloadConcurrency?: number;
+  downloadTimeoutMs?: number | null;
 }): Promise<string[]> {
   const upstream = await sendExperimentalImageEditRequest({
     prompt: args.prompt,
@@ -917,15 +1108,17 @@ async function runExperimentalImageEditCall(args: {
     settings: args.settings,
     timeoutMs: args.timeoutMs,
   });
-  const rawUrls = await collectImageUrls(upstream, 2);
-  const converted = await Promise.all(
-    rawUrls.map((rawUrl) =>
+  const rawUrls = await collectImageUrls(upstream, 2, args.streamTimeoutMs);
+  const converted = await mapLimit(
+    rawUrls,
+    Math.min(rawUrls.length || 1, resolveConcurrencyLimit(args.downloadConcurrency, rawUrls.length || 1)),
+    async (rawUrl) =>
       convertRawUrlByFormat(rawUrl, args.responseFormat, {
         baseUrl: args.baseUrl,
         cookie: args.cookie,
         settings: args.settings,
+        downloadTimeoutMs: args.downloadTimeoutMs,
       }),
-    ),
   );
   return converted.filter(Boolean);
 }
@@ -1064,6 +1257,15 @@ function createExperimentalImageEventStream(args: {
   aspectRatio: string;
   concurrency: number;
   timeoutMs?: number | null;
+  streamTimeoutMs?: number | null;
+  finalTimeoutMs?: number | null;
+  blockedGraceMs?: number | null;
+  enableNsfw?: boolean;
+  finalMinBytes?: number;
+  mediumMinBytes?: number;
+  blockedParallelAttempts?: number;
+  blockedParallelEnabled?: boolean;
+  downloadTimeoutMs?: number | null;
   onFinish?: (result: { status: number; duration: number }) => Promise<void> | void;
 }): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
@@ -1129,13 +1331,20 @@ function createExperimentalImageEventStream(args: {
           cookie: args.cookie,
           settings: args.settings,
           timeoutMs: args.timeoutMs ?? undefined,
+          streamTimeoutMs: args.streamTimeoutMs ?? undefined,
+          finalTimeoutMs: args.finalTimeoutMs ?? undefined,
+          blockedGraceMs: args.blockedGraceMs ?? undefined,
           aspectRatio: args.aspectRatio,
+          enableNsfw: args.enableNsfw,
+          finalMinBytes: args.finalMinBytes,
+          mediumMinBytes: args.mediumMinBytes,
           imageCb: async (image) => {
             if (image.isFinal) return;
             const converted = await convertImagineFrameByFormat(image, args.responseFormat, {
               baseUrl: args.baseUrl,
               cookie: args.cookie,
               settings: args.settings,
+              downloadTimeoutMs: args.downloadTimeoutMs,
             });
             if (converted) {
               emitPartial(image.index, converted, image.progress || imageStageProgress(image.stage), image.stage);
@@ -1146,6 +1355,7 @@ function createExperimentalImageEventStream(args: {
               baseUrl: args.baseUrl,
               cookie: args.cookie,
               settings: args.settings,
+              downloadTimeoutMs: args.downloadTimeoutMs,
             });
             if (converted) {
               emitCompleted(image.index, converted);
@@ -1159,6 +1369,7 @@ function createExperimentalImageEventStream(args: {
             baseUrl: args.baseUrl,
             cookie: args.cookie,
             settings: args.settings,
+            downloadTimeoutMs: args.downloadTimeoutMs,
           });
           if (converted) {
             emitCompleted(image.index, converted);
@@ -1372,6 +1583,22 @@ export async function handleChatCompletionsRequest(args: OpenAiHandlerArgs): Pro
     const cfg = MODEL_CONFIG[requestedModel]!;
     const isVideoModel = Boolean(cfg.is_video_model);
     const current = settingsBundle.current;
+    const conversationSettings = resolveConversationStreamSettings({
+      requestedModel,
+      current,
+      grok: settingsBundle.grok,
+    });
+    const imageConfig = current.image ?? {};
+    const assetTransferConfig = buildAssetTransferConfig(current);
+    const uploadConcurrency = resolveConcurrencyLimit(current.asset?.upload_concurrent, 5);
+    const imageStreamTimeoutMs = resolveIdleTimeoutMs(imageConfig.stream_timeout);
+    const imageFinalTimeoutMs = resolveIdleTimeoutMs(imageConfig.final_timeout);
+    const imageBlockedGraceMs = resolveIdleTimeoutMs(imageConfig.blocked_grace_seconds);
+    const imageEnableNsfw = imageConfig.nsfw !== false;
+    const imageFinalMinBytes = Math.max(1, Math.floor(Number(imageConfig.final_min_bytes ?? 100_000) || 100_000));
+    const imageMediumMinBytes = Math.max(1, Math.floor(Number(imageConfig.medium_min_bytes ?? 30_000) || 30_000));
+    const blockedParallelAttempts = Math.max(0, Math.floor(Number(imageConfig.blocked_parallel_attempts ?? 0) || 0));
+    const blockedParallelEnabled = imageConfig.blocked_parallel_enabled !== false;
     const requestedVideoConfig = isVideoModel ? body.video_config : undefined;
     const retryPolicy = resolveRetryPolicy(current.retry ?? {});
 
@@ -1417,7 +1644,7 @@ export async function handleChatCompletionsRequest(args: OpenAiHandlerArgs): Pro
         : null;
 
       try {
-        const uploads = await mapLimit(attachments, 5, async (attachment) => ({
+        const uploads = await mapLimit(attachments, uploadConcurrency, async (attachment) => ({
           attachment,
           uploaded: await uploadAttachment(
             attachment.value,
@@ -1425,6 +1652,7 @@ export async function handleChatCompletionsRequest(args: OpenAiHandlerArgs): Pro
             settingsBundle.grok,
             c.env.KV_CACHE,
             attachment.kind === "image" ? "image" : attachment.kind,
+            assetTransferConfig,
           ),
         }));
         const fileIds = uploads
@@ -1454,6 +1682,14 @@ export async function handleChatCompletionsRequest(args: OpenAiHandlerArgs): Pro
               baseUrl,
               aspectRatio: "2:3",
               concurrency: 1,
+              streamTimeoutMs: imageStreamTimeoutMs,
+              finalTimeoutMs: imageFinalTimeoutMs,
+              blockedGraceMs: imageBlockedGraceMs,
+              enableNsfw: imageEnableNsfw,
+              finalMinBytes: imageFinalMinBytes,
+              mediumMinBytes: imageMediumMinBytes,
+              blockedParallelAttempts,
+              blockedParallelEnabled,
             });
             const selected = pickImageResults(images, 2);
 
@@ -1552,7 +1788,7 @@ export async function handleChatCompletionsRequest(args: OpenAiHandlerArgs): Pro
         const upstream = await sendConversationRequest({
           payload,
           cookie,
-          settings: settingsBundle.grok,
+          settings: conversationSettings,
           timeoutMs: requestTimeoutMs,
           ...(referer ? { referer } : {}),
         });
@@ -1610,7 +1846,7 @@ export async function handleChatCompletionsRequest(args: OpenAiHandlerArgs): Pro
         if (stream) {
           const sse = createOpenAiStreamFromGrokNdjson(upstream, {
             cookie,
-            settings: settingsBundle.grok,
+            settings: conversationSettings,
             global: settingsBundle.global,
             origin,
             requestedModel,
@@ -1648,7 +1884,7 @@ export async function handleChatCompletionsRequest(args: OpenAiHandlerArgs): Pro
 
         const json = await parseOpenAiFromGrokNdjson(upstream, {
           cookie,
-          settings: settingsBundle.grok,
+          settings: conversationSettings,
           global: settingsBundle.global,
           origin,
           requestedModel,
@@ -1761,7 +1997,18 @@ export async function handleImageGenerationsRequest(args: OpenAiHandlerArgs): Pr
     const stream = parseImageStream(body.stream);
 
     const settingsBundle = await getSettings(c.env);
-    const imageTimeoutMs = resolveTimeoutMs(settingsBundle.current.image?.timeout, 60);
+    const downloadConcurrency = resolveConcurrencyLimit(settingsBundle.current.asset?.download_concurrent, 2);
+    const downloadTimeoutMs = resolveTimeoutMs(settingsBundle.current.asset?.download_timeout, 60);
+    const imageConfig = settingsBundle.current.image ?? {};
+    const imageTimeoutMs = resolveTimeoutMs(imageConfig.timeout, 60);
+    const imageStreamTimeoutMs = resolveIdleTimeoutMs(imageConfig.stream_timeout);
+    const imageFinalTimeoutMs = resolveIdleTimeoutMs(imageConfig.final_timeout);
+    const imageBlockedGraceMs = resolveIdleTimeoutMs(imageConfig.blocked_grace_seconds);
+    const imageEnableNsfw = imageConfig.nsfw !== false;
+    const imageFinalMinBytes = Math.max(1, Math.floor(Number(imageConfig.final_min_bytes ?? 100_000) || 100_000));
+    const imageMediumMinBytes = Math.max(1, Math.floor(Number(imageConfig.medium_min_bytes ?? 30_000) || 30_000));
+    const blockedParallelAttempts = Math.max(0, Math.floor(Number(imageConfig.blocked_parallel_attempts ?? 0) || 0));
+    const blockedParallelEnabled = imageConfig.blocked_parallel_enabled !== false;
     const imageMethod = imageGenerationMethod(settingsBundle);
     if (stream && imageMethod !== IMAGE_METHOD_IMAGINE_WS_EXPERIMENTAL && ![1, 2].includes(n)) {
       return c.json(openAiError(invalidStreamNMessage(), "invalid_stream_n"), 400);
@@ -1806,6 +2053,15 @@ export async function handleImageGenerationsRequest(args: OpenAiHandlerArgs): Pr
             aspectRatio,
             concurrency,
             timeoutMs: imageTimeoutMs,
+            streamTimeoutMs: imageStreamTimeoutMs,
+            finalTimeoutMs: imageFinalTimeoutMs,
+            blockedGraceMs: imageBlockedGraceMs,
+            enableNsfw: imageEnableNsfw,
+            finalMinBytes: imageFinalMinBytes,
+            mediumMinBytes: imageMediumMinBytes,
+            blockedParallelAttempts,
+            blockedParallelEnabled,
+            downloadTimeoutMs,
             onFinish: async ({ status, duration }) => {
               await addRequestLog(c.env.DB, {
                 ip,
@@ -1876,14 +2132,16 @@ export async function handleImageGenerationsRequest(args: OpenAiHandlerArgs): Pr
         );
       }
 
-      const streamBody = createImageEventStream({
-        upstream,
-        responseFormat,
-        baseUrl,
-        cookie,
-        settings: settingsBundle.grok,
-        n,
-        onFinish: async ({ status, duration }) => {
+        const streamBody = createImageEventStream({
+          upstream,
+          responseFormat,
+          baseUrl,
+          cookie,
+          settings: settingsBundle.grok,
+          n,
+          streamTimeoutMs: imageStreamTimeoutMs,
+          downloadTimeoutMs,
+          onFinish: async ({ status, duration }) => {
           await addRequestLog(c.env.DB, {
             ip,
             model: requestedModel,
@@ -1913,6 +2171,16 @@ export async function handleImageGenerationsRequest(args: OpenAiHandlerArgs): Pr
             aspectRatio,
             concurrency,
             timeoutMs: imageTimeoutMs,
+            streamTimeoutMs: imageStreamTimeoutMs,
+            finalTimeoutMs: imageFinalTimeoutMs,
+            blockedGraceMs: imageBlockedGraceMs,
+            enableNsfw: imageEnableNsfw,
+            finalMinBytes: imageFinalMinBytes,
+            mediumMinBytes: imageMediumMinBytes,
+            blockedParallelAttempts,
+            blockedParallelEnabled,
+            downloadConcurrency,
+            downloadTimeoutMs,
           });
           const selected = pickImageResults(urls, n);
           await recordImageLog({
@@ -1954,6 +2222,9 @@ export async function handleImageGenerationsRequest(args: OpenAiHandlerArgs): Pr
             responseFormat,
             baseUrl,
             timeoutMs: imageTimeoutMs,
+            streamTimeoutMs: imageStreamTimeoutMs,
+            downloadConcurrency,
+            downloadTimeoutMs,
           });
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
@@ -2040,7 +2311,12 @@ export async function handleImageEditsRequest(args: OpenAiHandlerArgs): Promise<
     }
 
     const settingsBundle = await getSettings(c.env);
+    const assetTransferConfig = buildAssetTransferConfig(settingsBundle.current);
+    const uploadConcurrency = resolveConcurrencyLimit(settingsBundle.current.asset?.upload_concurrent, 5);
+    const downloadConcurrency = resolveConcurrencyLimit(settingsBundle.current.asset?.download_concurrent, 2);
+    const downloadTimeoutMs = resolveTimeoutMs(settingsBundle.current.asset?.download_timeout, 60);
     const imageTimeoutMs = resolveTimeoutMs(settingsBundle.current.image?.timeout, 60);
+    const imageStreamTimeoutMs = resolveIdleTimeoutMs(settingsBundle.current.image?.stream_timeout);
     const imageMethod = imageGenerationMethod(settingsBundle);
     const parsedResponseFormat = resolveImageResponseFormatByMethodOrError(
       form.get("response_format"),
@@ -2091,30 +2367,42 @@ export async function handleImageEditsRequest(args: OpenAiHandlerArgs): Promise<
     }
     const cookie = buildCookie(chosen.token, settingsBundle.grok);
 
-    const fileIds: string[] = [];
-    const fileUris: string[] = [];
-    for (const file of files) {
+    const uploads = await mapLimit(Array.from(files), uploadConcurrency, async (file) => {
       const bytes = await file.arrayBuffer();
       if (bytes.byteLength <= 0) {
-        return c.json(openAiError("File content is empty", "empty_file"), 400);
+        throw new Error("EMPTY_FILE");
       }
       if (bytes.byteLength > maxImageBytes) {
-        return c.json(openAiError("Image file too large. Maximum is 50MB.", "file_too_large"), 400);
+        throw new Error("FILE_TOO_LARGE");
       }
 
       const mime = parseAllowedImageMime(file);
       if (!mime) {
-        return c.json(
-          openAiError("Unsupported image type. Supported: png, jpg, webp.", "invalid_image_type"),
-          400,
-        );
+        throw new Error("INVALID_IMAGE_TYPE");
       }
 
       const dataUrl = `data:${mime};base64,${arrayBufferToBase64(bytes)}`;
-      const uploaded = await uploadImage(dataUrl, cookie, settingsBundle.grok, c.env.KV_CACHE);
-      if (uploaded.fileId) fileIds.push(uploaded.fileId);
-      if (uploaded.fileUri) fileUris.push(uploaded.fileUri);
+      return uploadImage(dataUrl, cookie, settingsBundle.grok, c.env.KV_CACHE, assetTransferConfig);
+    }).catch((error) => {
+      const code = error instanceof Error ? error.message : String(error);
+      if (code === "EMPTY_FILE") return "EMPTY_FILE" as const;
+      if (code === "FILE_TOO_LARGE") return "FILE_TOO_LARGE" as const;
+      if (code === "INVALID_IMAGE_TYPE") return "INVALID_IMAGE_TYPE" as const;
+      throw error;
+    });
+
+    if (uploads === "EMPTY_FILE") {
+      return c.json(openAiError("File content is empty", "empty_file"), 400);
     }
+    if (uploads === "FILE_TOO_LARGE") {
+      return c.json(openAiError("Image file too large. Maximum is 50MB.", "file_too_large"), 400);
+    }
+    if (uploads === "INVALID_IMAGE_TYPE") {
+      return c.json(openAiError("Unsupported image type. Supported: png, jpg, webp.", "invalid_image_type"), 400);
+    }
+
+    const fileIds = uploads.map((uploaded) => uploaded.fileId).filter(Boolean);
+    const fileUris = uploads.map((uploaded) => uploaded.fileUri).filter(Boolean);
 
     if (stream) {
       if (imageMethod === IMAGE_METHOD_IMAGINE_WS_EXPERIMENTAL) {
@@ -2134,6 +2422,8 @@ export async function handleImageEditsRequest(args: OpenAiHandlerArgs): Promise<
             cookie,
             settings: settingsBundle.grok,
             n,
+            streamTimeoutMs: imageStreamTimeoutMs,
+            downloadTimeoutMs,
             onFinish: async ({ status, duration }) => {
               await addRequestLog(c.env.DB, {
                 ip,
@@ -2196,6 +2486,8 @@ export async function handleImageEditsRequest(args: OpenAiHandlerArgs): Promise<
         cookie,
         settings: settingsBundle.grok,
         n,
+        streamTimeoutMs: imageStreamTimeoutMs,
+        downloadTimeoutMs,
         onFinish: async ({ status, duration }) => {
           await addRequestLog(c.env.DB, {
             ip,
@@ -2223,6 +2515,9 @@ export async function handleImageEditsRequest(args: OpenAiHandlerArgs): Promise<
             responseFormat,
             baseUrl,
             timeoutMs: imageTimeoutMs,
+            streamTimeoutMs: imageStreamTimeoutMs,
+            downloadConcurrency,
+            downloadTimeoutMs,
           }),
         );
         const urls = dedupeImages(urlsNested.flat().filter(Boolean));
@@ -2260,6 +2555,9 @@ export async function handleImageEditsRequest(args: OpenAiHandlerArgs): Promise<
         responseFormat,
         baseUrl,
         timeoutMs: imageTimeoutMs,
+        streamTimeoutMs: imageStreamTimeoutMs,
+        downloadConcurrency,
+        downloadTimeoutMs,
       });
     });
     const urls = dedupeImages(urlsNested.flat().filter(Boolean));

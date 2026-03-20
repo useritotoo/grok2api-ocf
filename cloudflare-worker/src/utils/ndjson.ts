@@ -1,6 +1,36 @@
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function readWithTimeout(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  timeoutMs?: number | null,
+): Promise<ReadableStreamReadResult<Uint8Array> | { timeout: true }> {
+  const normalizedTimeoutMs = Number(timeoutMs);
+  if (!Number.isFinite(normalizedTimeoutMs) || normalizedTimeoutMs <= 0) {
+    return reader.read();
+  }
+  return await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => resolve({ timeout: true } as const), normalizedTimeoutMs);
+    reader.read().then(
+      (result) => {
+        clearTimeout(timer);
+        resolve(result);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
 export async function consumeNdjsonObjects(
   response: Response,
   onObject: (value: Record<string, unknown>) => boolean | void | Promise<boolean | void>,
+  options: {
+    readTimeoutMs?: number | null;
+  } = {},
 ): Promise<void> {
   const body = response.body;
   if (!body) return;
@@ -26,7 +56,14 @@ export async function consumeNdjsonObjects(
 
   try {
     while (true) {
-      const { value, done } = await reader.read();
+      const readResult = await readWithTimeout(reader, options.readTimeoutMs);
+      if ("timeout" in readResult) {
+        const timeoutMessage = Number.isFinite(Number(options.readTimeoutMs))
+          ? `NDJSON stream idle timeout after ${Math.floor(Number(options.readTimeoutMs))}ms`
+          : "NDJSON stream idle timeout";
+        throw new Error(timeoutMessage);
+      }
+      const { value, done } = readResult;
       if (done) break;
       if (!value) continue;
 

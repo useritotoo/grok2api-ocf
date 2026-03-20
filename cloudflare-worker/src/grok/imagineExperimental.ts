@@ -246,6 +246,9 @@ export async function collectImagineWsImages(args: {
   cookie: string;
   settings: GrokSettings;
   timeoutMs?: number;
+  streamTimeoutMs?: number;
+  finalTimeoutMs?: number;
+  blockedGraceMs?: number;
   aspectRatio?: string;
   enableNsfw?: boolean;
   finalMinBytes?: number;
@@ -255,6 +258,9 @@ export async function collectImagineWsImages(args: {
   completedCb?: (completed: ImagineWsCompleted) => void | Promise<void>;
 }): Promise<ImagineWsImageFrame[]> {
   const timeoutMs = Math.max(10_000, Number(args.timeoutMs ?? 120_000));
+  const streamTimeoutMs = Math.max(1, Math.floor(Number(args.streamTimeoutMs ?? timeoutMs)));
+  const finalTimeoutMs = Math.max(streamTimeoutMs, Math.floor(Number(args.finalTimeoutMs ?? timeoutMs)));
+  const blockedGraceMs = Math.max(1, Math.min(finalTimeoutMs, Math.floor(Number(args.blockedGraceMs ?? 10_000))));
   const targetCount = Math.max(1, Math.floor(Number(args.n || 1)));
   const aspectRatio = resolveAspectRatio(args.aspectRatio);
   const enableNsfw = args.enableNsfw !== false;
@@ -288,10 +294,14 @@ export async function collectImagineWsImages(args: {
 
   await new Promise<void>((resolve, reject) => {
     let finished = false;
+    let idleTimer: ReturnType<typeof setTimeout> | null = null;
+    let finalTimer: ReturnType<typeof setTimeout> | null = null;
+    let mediumReceivedAt = 0;
 
     const onMessage = (event: MessageEvent) => {
       const msg = parseWsJson(event.data);
       if (!msg) return;
+      resetIdleTimer();
 
       const msgRequestId = String(msg.request_id ?? msg.requestId ?? "");
       if (msgRequestId && msgRequestId !== requestId) return;
@@ -341,9 +351,23 @@ export async function collectImagineWsImages(args: {
         });
       }
 
+      if (image.stage === "medium" && !image.isFinal && mediumReceivedAt === 0) {
+        mediumReceivedAt = Date.now();
+        if (finalTimer) clearTimeout(finalTimer);
+        finalTimer = setTimeout(() => {
+          if (finalImages.size === 0) {
+            finish(new ImagineWsError(`Imagine websocket final image timeout after ${finalTimeoutMs}ms`));
+          }
+        }, finalTimeoutMs);
+      }
+
       if (image.isFinal) {
         if (!finalImages.has(image.imageId)) {
           finalImages.set(image.imageId, image);
+        }
+        if (finalTimer) {
+          clearTimeout(finalTimer);
+          finalTimer = null;
         }
         if (args.completedCb) {
           Promise.resolve(
@@ -368,8 +392,23 @@ export async function collectImagineWsImages(args: {
       else finish(new ImagineWsError("Imagine websocket closed before completed images"));
     };
 
-    const onError = () => {
+      const onError = () => {
       finish(new ImagineWsError("Imagine websocket error event"));
+    };
+
+    const resetIdleTimer = () => {
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => {
+        if (finalImages.size > 0) {
+          finish();
+          return;
+        }
+        if (mediumReceivedAt && Date.now() - mediumReceivedAt >= blockedGraceMs) {
+          finish(new ImagineWsError(`Imagine websocket blocked after ${blockedGraceMs}ms without final image`));
+          return;
+        }
+        resetIdleTimer();
+      }, streamTimeoutMs);
     };
 
     const timer = setTimeout(() => {
@@ -378,6 +417,8 @@ export async function collectImagineWsImages(args: {
 
     const cleanup = () => {
       clearTimeout(timer);
+      if (idleTimer) clearTimeout(idleTimer);
+      if (finalTimer) clearTimeout(finalTimer);
       ws.removeEventListener("message", onMessage as EventListener);
       ws.removeEventListener("close", onClose as EventListener);
       ws.removeEventListener("error", onError as EventListener);
@@ -399,6 +440,7 @@ export async function collectImagineWsImages(args: {
     ws.addEventListener("message", onMessage as EventListener);
     ws.addEventListener("close", onClose as EventListener);
     ws.addEventListener("error", onError as EventListener);
+    resetIdleTimer();
   });
 
   const images = Array.from(finalImages.values())

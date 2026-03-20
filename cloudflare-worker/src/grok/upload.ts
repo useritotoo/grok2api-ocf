@@ -8,6 +8,11 @@ const UPLOAD_API = "https://grok.com/rest/app-chat/upload-file";
 const IMAGE_MIME_DEFAULT = "image/jpeg";
 const FILE_MIME_DEFAULT = "application/octet-stream";
 
+export interface AssetTransferConfig {
+  upload_timeout?: unknown;
+  download_timeout?: unknown;
+}
+
 function isUrl(input: string): boolean {
   try {
     const u = new URL(input);
@@ -50,6 +55,23 @@ function sanitizeBaseName(baseName: string): string {
   return safe || "attachment";
 }
 
+function resolveTimeoutMs(value: unknown): number | null {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  return Math.max(1_000, Math.floor(parsed * 1000));
+}
+
+function withTimeout(init: RequestInit, timeoutMs: number | null): RequestInit {
+  if (
+    timeoutMs === null
+    || typeof AbortSignal === "undefined"
+    || typeof AbortSignal.timeout !== "function"
+  ) {
+    return init;
+  }
+  return { ...init, signal: AbortSignal.timeout(timeoutMs) };
+}
+
 export function prepareUploadAttachment(
   input: string,
   baseName = "attachment",
@@ -78,10 +100,13 @@ export async function uploadAttachment(
   settings: GrokSettings,
   kvCache?: Env["KV_CACHE"],
   baseName = "attachment",
+  transferConfig?: AssetTransferConfig,
 ): Promise<{ fileId: string; fileUri: string }> {
   let base64 = "";
   let mime = FILE_MIME_DEFAULT;
   let filename = `${sanitizeBaseName(baseName)}.${guessExtFromMime(FILE_MIME_DEFAULT)}`;
+  const downloadTimeoutMs = resolveTimeoutMs(transferConfig?.download_timeout);
+  const uploadTimeoutMs = resolveTimeoutMs(transferConfig?.upload_timeout);
 
   const selfUrlMatch = attachmentInput.match(/\/images\/(upload-[^?#]+)/)
     || attachmentInput.match(/\/v1\/files\/image\/(upload-[^?#]+)/);
@@ -96,7 +121,7 @@ export async function uploadAttachment(
       throw new Error(`鏃犳硶鑾峰彇鏈湴涓婁紶鐨勫弬鑰冨浘(鍙兘宸茶繃鏈熸垨璺ㄨ妭鐐瑰悓姝ュ欢杩?锛岃閲嶆柊涓婁紶`);
     }
   } else if (isUrl(attachmentInput)) {
-    const r = await fetch(attachmentInput, { redirect: "follow" });
+    const r = await fetch(attachmentInput, withTimeout({ redirect: "follow" }, downloadTimeoutMs));
     if (!r.ok) throw new Error(`涓嬭浇鍥剧墖澶辫触: ${r.status}`);
     mime = r.headers.get("content-type")?.split(";")[0] ?? FILE_MIME_DEFAULT;
     base64 = arrayBufferToBase64(await r.arrayBuffer());
@@ -117,7 +142,7 @@ export async function uploadAttachment(
   const headers = getDynamicHeaders(settings, "/rest/app-chat/upload-file");
   headers.Cookie = cookie;
 
-  const resp = await fetch(UPLOAD_API, { method: "POST", headers, body });
+  const resp = await fetch(UPLOAD_API, withTimeout({ method: "POST", headers, body }, uploadTimeoutMs));
   if (!resp.ok) {
     const text = await resp.text().catch(() => "");
     throw new Error(`涓婁紶澶辫触: ${resp.status} ${text.slice(0, 200)}`);
@@ -131,6 +156,7 @@ export async function uploadImage(
   cookie: string,
   settings: GrokSettings,
   kvCache?: Env["KV_CACHE"],
+  transferConfig?: AssetTransferConfig,
 ): Promise<{ fileId: string; fileUri: string }> {
-  return uploadAttachment(imageInput, cookie, settings, kvCache, "image");
+  return uploadAttachment(imageInput, cookie, settings, kvCache, "image", transferConfig);
 }

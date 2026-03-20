@@ -202,6 +202,7 @@ test("video chat completions use current video.timeout for the upstream request"
   }
 });
 
+
 test("image generations use current image.timeout for the upstream request", async () => {
   const originalTimeout = AbortSignal.timeout;
   const sentinelSignal = new AbortController().signal;
